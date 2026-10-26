@@ -78,6 +78,14 @@ Go to GitHub Repository → Settings → Secrets and variables → Actions:
 
 Open GitHub Actions → **Refresh blog index** → **Run workflow** to trigger the initial import manually (do not select the backfill reset option on the first run). The workflow repeatedly calls the Worker in batches and uses the D1 cursor to resume historical imports. The scheduled workflow checks UTC day parity every day at **02:17 UTC** and performs ingestion every two days. GitHub Actions scheduled runs may be delayed.
 
+### Recovering from a Failed Backfill
+
+- **Do not clear D1 or select `reset_backfill`** to resume a stopped import. Its checkpoint is persisted in D1.
+- D1 permits at most 100 bound parameters per SQL statement. Every chunk INSERT row has 8 bound values, so each INSERT is limited to 12 chunks; this is covered by CI tests.
+- To reduce resource pressure on free-tier Workers, the default is now 2 articles per request with concurrency set to 1. This takes more requests but is safer for initial backfills.
+- GitHub Actions serializes ingest workflow runs, and retries temporary HTTP 409 (active lock), 429, 500, 502, 503, 504, or transport errors with exponential-then-capped backoff. Persistent errors still fail the run with details.
+- Individual article failures are stored in D1 `failed_articles` and are retried when due on later ingestion requests. Review the workflow's `failed` total and warning messages.
+
 ## Step 7: Verify the Website and ChatGPT MCP
 
 - `GET https://<worker-host>/`: Search website.
