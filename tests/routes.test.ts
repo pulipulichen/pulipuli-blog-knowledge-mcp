@@ -71,6 +71,31 @@ describe("public Worker routes (without Cloudflare credentials)", () => {
     }
   });
 
+  it("returns Retry-After on an ingestion lock conflict", async () => {
+    const env = mockEnv();
+    env.DB = {
+      prepare(sql: string) {
+        if (sql.includes("INSERT OR IGNORE INTO sync_lock")) {
+          return { run: async () => ({ success: true }) };
+        }
+        if (sql.includes("UPDATE sync_lock SET token")) {
+          return { bind: () => ({ run: async () => ({ meta: { changes: 0 } }) }) };
+        }
+        throw new Error(`Unexpected SQL: ${sql}`);
+      },
+    } as unknown as D1Database;
+
+    const response = await worker.fetch(new Request(
+      "https://worker.example.test/internal/ingest",
+      { method: "POST", headers: { authorization: "Bearer unit-test-token" }, body: "{}" },
+    ), env);
+    expect(response.status).toBe(409);
+    expect(response.headers.get("retry-after")).toBe("20");
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "ingestion_already_running" },
+    });
+  });
+
   it("responds to CORS preflight without credentials", async () => {
     const response = await worker.fetch(new Request("https://worker.example.test/mcp", {
       method: "OPTIONS",

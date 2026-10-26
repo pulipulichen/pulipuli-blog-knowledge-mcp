@@ -1,4 +1,5 @@
 import { fetchArticleText, canonicalizeUrl } from "./article";
+import { maxRowsPerD1Insert } from "./d1-limits";
 import { getConfig, feedUrlWithPagination, nextStartIndexUrl } from "./config";
 import { fetchFeedPage } from "./feed";
 import { HttpError, normalizeText, sha256Hex, sleep, splitIntoChunks, stableUuid } from "./http";
@@ -187,8 +188,11 @@ async function indexEntry(env: Env, entry: FeedEntry): Promise<"inserted" | "upd
     fetchedAt,
   );
   const chunkStatements: D1PreparedStatement[] = [];
-  for (let start = 0; start < newChunkRows.length; start += 100) {
-    const batch = newChunkRows.slice(start, start + 100);
+  // Eight bound values per chunk; D1 permits at most 100 per statement.
+  // Batch multiple small INSERTs transactionally instead of one oversized INSERT.
+  const rowsPerInsert = maxRowsPerD1Insert(8);
+  for (let start = 0; start < newChunkRows.length; start += rowsPerInsert) {
+    const batch = newChunkRows.slice(start, start + rowsPerInsert);
     const values: Array<string | number> = [];
     const placeholders = batch.map((chunk) => {
       values.push(chunk.id, chunk.articleId, chunk.ordinal, chunk.text, contentHash, config.embeddingModel, chunk.vectorId, fetchedAt);

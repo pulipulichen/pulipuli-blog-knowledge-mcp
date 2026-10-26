@@ -16,6 +16,7 @@ Use `npm run test:watch` during development. Tests run with Vitest, and network 
 
 ### Included Tests
 
+- `tests/d1-limits.test.ts`: D1's 100-variable SQL bind limit, eight-column chunk INSERT batch sizing, and invalid parameters.
 - `tests/http.test.ts`: Bearer Token handling, JSON length limits, HTTP 429 retries, canonical URLs, Unicode chunking, hashing, and UUIDs.
 - `tests/feed.test.ts`: Blogger Atom and RSS parsing, tags and timestamps, same-origin pagination restrictions, and error responses.
 - `tests/qdrant.test.ts`: Workers AI embedding formats, Qdrant collection creation/vector dimension validation, and result mapping.

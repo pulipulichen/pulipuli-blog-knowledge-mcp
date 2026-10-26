@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
 
+# Keep manual and scheduled ingestions from competing for the same D1 lock.
+concurrency:
+  group: blog-index-ingest
+  cancel-in-progress: false
+
 jobs:
   trigger:
     runs-on: ubuntu-latest
@@ -53,13 +58,57 @@ jobs:
           total_unchanged=0
           total_failed=0
 
+          response_file="$(mktemp)"
+          trap 'rm -f "${response_file}"' EXIT
+          max_request_attempts=24
+
           for batch_number in $(seq 1 10000); do
-            response="$(curl --silent --show-error --fail-with-body \
-              --retry 3 --retry-all-errors --retry-delay 2 --max-time 120 \
-              -X POST "${INGEST_URL}" \
-              -H "Authorization: Bearer ${INGEST_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "${request_body}")"
+            # A timed-out Worker may still own the D1 lease; 409 is retryable.
+            # HTTP 503/429 and transport errors can also be temporary.
+            request_attempt=1
+            while :; do
+              curl_exit=0
+              if http_status="$(curl --silent --show-error \
+                --output "${response_file}" --write-out '%{http_code}' \
+                --connect-timeout 15 --max-time 120 \
+                -X POST "${INGEST_URL}" \
+                -H "Authorization: Bearer ${INGEST_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "${request_body}")"; then
+                :
+              else
+                curl_exit=$?
+              fi
+              response="$(cat "${response_file}")"
+
+              if [[ "${curl_exit}" -eq 0 && "${http_status}" == "200" ]]; then
+                if ! jq -e '(.done | type) == "boolean" and (.scanned | type) == "number" and (.failed | type) == "number"' <<< "${response}" >/dev/null; then
+                  echo "::error::Worker returned HTTP 200 without a valid ingestion result: ${response:0:500}" >&2
+                  exit 1
+                fi
+                break
+              fi
+
+              retryable=false
+              case "${http_status}" in
+                409|429|500|502|503|504) retryable=true ;;
+                000) if [[ "${curl_exit}" -ne 0 ]]; then retryable=true; fi ;;
+              esac
+
+              if [[ "${retryable}" != "true" || "${request_attempt}" -ge "${max_request_attempts}" ]]; then
+                echo "::error::Ingestion batch ${batch_number} failed (HTTP ${http_status}, curl ${curl_exit}) after ${request_attempt} attempt(s): ${response:0:500}" >&2
+                exit 1
+              fi
+
+              if (( request_attempt < 5 )); then
+                retry_delay=$((2 ** request_attempt))
+              else
+                retry_delay=60
+              fi
+              echo "::warning::Ingestion batch ${batch_number} returned HTTP ${http_status} (curl ${curl_exit}); attempt ${request_attempt}/${max_request_attempts}; retrying in ${retry_delay}s"
+              sleep "${retry_delay}"
+              request_attempt=$((request_attempt + 1))
+            done
             request_body='{}'
 
             echo "${response}" | jq '{mode, done, scanned, inserted, updated, unchanged, failed, retrying, errors}'
@@ -82,3 +131,6 @@ jobs:
           fi
 
           echo "Completed: scanned=${total_scanned}, inserted=${total_inserted}, updated=${total_updated}, unchanged=${total_unchanged}, failed=${total_failed}"
+          if (( total_failed > 0 )); then
+            echo "::warning::${total_failed} article attempt(s) failed; their details were saved in D1 for retry during later runs."
+          fi
