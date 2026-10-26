@@ -25,14 +25,14 @@
 ## 第 2 步：建立 Qdrant Cloud 叢集
 
 1. 登入 Qdrant Cloud，建立免費叢集。
-2. 保存 cluster URL 和 API Key，稍後貼到 GitHub Secrets，而不是 GitHub 程式碼或 Issue。
+2. 保存 **Cluster Endpoint**（Qdrant REST API，通常為 `https://<cluster-host>:6333`）和 API Key，稍後填入 GitHub Secrets，而不是 GitHub 程式碼或 Issue。請保留端點提供的 `https://` 與 `:6333`，不要填叢集管理後台網址。
 3. 選擇 collection 名稱，例如 `pulipuli_blog_chunks`，稍後加入 GitHub Variable `QDRANT_COLLECTION`。
 4. 不需要手動建立 collection：第一次匯入時 Worker 會依 embedding 的實際向量維度建立 collection。
 
 ## 第 3 步：Cloudflare API Token / Account ID
 
 1. 在 Cloudflare Dashboard 找到 Account ID。
-2. 開啟 Cloudflare → Profile → API Tokens，建立 **專用、限縮本帳號權限** 的部署 Token。需要允許建立／部署 Workers、更新 Worker Secrets，以及操作 D1 migrations 的權限（D1 讀寫）；依 Cloudflare 當下的權限介面授權。
+2. 開啟 Cloudflare 帳號的 API Tokens 頁面，建立 **專用、限縮本帳號** 的部署 Token。首次透過 `wrangler deploy` 建立新 Worker，需 Workers 產品層級 **Admin**；若 Worker 已存在才可縮減為該 Worker 的 **Editor**。另需授予操作 D1 migrations 所需的 D1 讀寫權限。請依 Cloudflare 當下介面選取對應的權限，切勿使用 Global API Key。
 3. 建議不要使用 Global API Key，也不要把 Token 填在任何 Git 追蹤的檔案。
 
 參考 Cloudflare 官方文件：[GitHub Actions CI/CD](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) 與 [Workers 權限](https://developers.cloudflare.com/workers/authorization/workers/)。
