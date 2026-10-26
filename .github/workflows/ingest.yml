@@ -1,0 +1,31 @@
+name: Refresh blog index
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only run every two days (manual runs always proceed)
+        id: gate
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || (( ($(date -u +%s) / 86400) % 2 == 0 )); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Trigger authenticated ingestion
+        if: steps.gate.outputs.run == 'true'
+        env:
+          INGEST_URL: ${{ secrets.INGEST_URL }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: |
+          test -n "$INGEST_URL" && test -n "$INGEST_TOKEN"
+          curl --fail-with-body --retry 3 --retry-all-errors --max-time 120 \
+            -X POST "$INGEST_URL" \
+            -H "Authorization: Bearer $INGEST_TOKEN" \
+            -H "Content-Type: application/json" -d '{}'
