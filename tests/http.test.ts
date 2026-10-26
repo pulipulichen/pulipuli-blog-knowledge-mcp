@@ -76,6 +76,13 @@ describe("article text and identifiers", () => {
     )).toBe("https://blog.pulipuli.info/2026/10/post.html?keep=yes");
   });
 
+  it("removes adjacent and repeated tracking keys without skipping other parameters", () => {
+    expect(canonicalizeUrl(
+      "/post?utm_source=rss&fbclid=1&utm_medium=email&keep=first&gclid=2&keep=second&mc_cid=3&mc_eid=4&UTM_CAMPAIGN=launch",
+      "https://blog.pulipuli.info/",
+    )).toBe("https://blog.pulipuli.info/post?keep=first&keep=second");
+  });
+
   it("normalizes whitespace without losing Chinese text", () => {
     expect(normalizeText("  Hello   world \n\n  中文  測試  \n")).toBe("Hello world\n中文 測試");
   });
