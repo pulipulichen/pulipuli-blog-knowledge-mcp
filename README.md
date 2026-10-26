@@ -12,6 +12,17 @@
 - 提供 `/mcp` 唯讀工具 `search_articles` 與 `get_article`，可加入支援 Streamable HTTP 的 MCP 用戶端。
 - GitHub Actions 每兩天觸發同步，初次回填可在多個 Worker 請求間續跑。
 
+## 測試與 CI
+
+使用 Node.js 22，可在沒有 Cloudflare / Qdrant 金鑰的情況下執行：
+
+```bash
+npm install
+npm run typecheck
+npm test
+```
+
+GitHub Actions [CI](.github/workflows/ci.yml) 在推送 `main`、提出 Pull Request 或手動啟動時執行型別檢查與離線單元測試；完整範圍及限制請見 [測試指南](docs/testing.md)。
 ## 快速開始
 
 1. 安裝 Node.js 與 npm，複製 `wrangler.example.toml` 為 `wrangler.toml`，填入 D1 Database ID。`wrangler.toml`、`.dev.vars` 已加入 `.gitignore`。
