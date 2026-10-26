@@ -1,0 +1,38 @@
+{
+  "project": "pulipuli-blog-knowledge-mcp",
+  "source": {
+    "id": "pulipuli-blog",
+    "homepage": "https://blog.pulipuli.info/",
+    "feed_urls": [],
+    "backfill": {
+      "enabled": true,
+      "strategy": "sitemap-or-archive"
+    }
+  },
+  "ingestion": {
+    "interval_days": 2,
+    "max_articles_per_run": 100,
+    "concurrency": 2,
+    "request_delay_ms": 1000
+  },
+  "storage": {
+    "metadata": "cloudflare-d1",
+    "vectors": "qdrant-cloud"
+  },
+  "embedding": {
+    "provider": "cloudflare-workers-ai",
+    "model": "CONFIGURE_VERIFIED_MULTILINGUAL_MODEL",
+    "dimensions": null,
+    "chunk_size_chars": 900,
+    "chunk_overlap_chars": 150
+  },
+  "search": {
+    "default_mode": "hybrid",
+    "max_results": 20
+  },
+  "mcp": {
+    "transport": "streamable-http",
+    "path": "/mcp",
+    "read_only": true
+  }
+}
