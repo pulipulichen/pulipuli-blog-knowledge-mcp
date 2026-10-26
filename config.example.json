@@ -3,7 +3,9 @@
   "source": {
     "id": "pulipuli-blog",
     "homepage": "https://blog.pulipuli.info/",
-    "feed_urls": [],
+    "feed_urls": [
+      "https://blog.pulipuli.info/feeds/posts/default"
+    ],
     "backfill": {
       "enabled": true,
       "strategy": "sitemap-or-archive"
