@@ -1,10 +1,10 @@
-# 自動化測試與 CI
+# Automated Testing and CI
 
-本專案的核心測試不需要 Cloudflare、Qdrant 或任何 API Key。CI 不會觸發正式文章同步、不會寫入正式 D1，也不會消耗 Workers AI 額度。
+Core tests do not require Cloudflare, Qdrant, or any API keys. CI does not trigger production ingestion, write to the production D1 database, or consume Workers AI quota.
 
-## 本機執行
+## Running Tests Locally (Optional for Contributors)
 
-需求：Node.js 22 與 npm。
+Requirements: Node.js 22 and npm.
 
 ```bash
 npm install
@@ -12,30 +12,30 @@ npm run typecheck
 npm test
 ```
 
-開發過程可使用 `npm run test:watch`，測試使用 Vitest，網路呼叫由 mock 取代。
+Use `npm run test:watch` during development. Tests run with Vitest, and network calls are mocked.
 
-### 已加入的測試
+### Included Tests
 
-- `tests/http.test.ts`：Bearer Token、JSON 長度限制、HTTP 429 重試、canonical URL、Unicode 切塊、Hash 與 UUID。
-- `tests/feed.test.ts`：Blogger Atom 和 RSS 解析、標籤與時間、同源分頁限制與錯誤回應。
-- `tests/qdrant.test.ts`：Workers AI embedding 格式、Qdrant collection 建立／向量維度檢查與結果映射。
-- `tests/search.test.ts`：關鍵字／語意搜尋、RRF 混合排序、重複 chunk 去重、查詢驗證與文章查詢。
-- `tests/routes.test.ts`：搜尋首頁、健康檢查、搜尋 API、未授權同步、CORS 和不存在的文章。
+- `tests/http.test.ts`: Bearer Token handling, JSON length limits, HTTP 429 retries, canonical URLs, Unicode chunking, hashing, and UUIDs.
+- `tests/feed.test.ts`: Blogger Atom and RSS parsing, tags and timestamps, same-origin pagination restrictions, and error responses.
+- `tests/qdrant.test.ts`: Workers AI embedding formats, Qdrant collection creation/vector dimension validation, and result mapping.
+- `tests/search.test.ts`: Keyword/semantic search, RRF hybrid ranking, duplicate chunk removal, query validation, and article lookup.
+- `tests/routes.test.ts`: Search home page, health checks, search API, unauthorized ingestion, CORS, and missing articles.
 
 ## GitHub Actions
 
-- 工作流程：`.github/workflows/ci.yml`
-- 觸發條件：推送 `main`、Pull Request、手動執行。
-- 檢查順序：`npm install` → `npm run typecheck` → `npm test`。
-- 權限：唯讀 GitHub Repository；不用設定 Cloudflare 或 Qdrant Secrets。
+- Workflow: `.github/workflows/ci.yml`.
+- Triggers: Pushes to `main`, pull requests, and manual workflow dispatch.
+- Steps: `npm install` → `npm run typecheck` → `npm test`.
+- Permissions: Read-only repository access; no Cloudflare or Qdrant Secrets are required.
 
-目前尚未提交 `package-lock.json`，所以 CI 使用 `npm install`。之後應補上 lockfile，將 CI 改為 `npm ci` 以提高可重現性。
+A `package-lock.json` has not been committed yet, so CI uses `npm install`. Adding a lockfile and changing CI to `npm ci` would improve reproducibility.
 
-## 上線前仍需完成的整合測試
+## Integration Checks Still Required Before Production Use
 
-以上測試都是離線單元測試，不能取代真實雲端整合驗證。正式部署後仍需檢查：
+These are offline unit tests and do not replace real cloud integration checks. After deployment, verify:
 
-1. Workers AI 實際 embedding 模型輸出及 Qdrant collection 向量維度。
-2. D1 migration、歷史回填、抓取失敗重試與游標續跑。
-3. `/mcp` Streamable HTTP 初始化及 ChatGPT 呼叫 `search_articles`、`get_article`。
-4. `ingest.yml` 的 Secret 設定、定期排程和首次回填。
+1. Actual Workers AI embedding output and the Qdrant collection's vector dimension.
+2. D1 migrations, historical backfill, failed-fetch retries, and cursor resumption.
+3. `/mcp` Streamable HTTP initialization and ChatGPT calls to `search_articles` and `get_article`.
+4. `ingest.yml` Secret configuration, scheduled execution, and initial backfill.

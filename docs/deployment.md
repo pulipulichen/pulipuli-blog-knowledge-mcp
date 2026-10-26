@@ -1,95 +1,95 @@
-# 純雲端部署：GitHub Actions → Cloudflare Workers + D1 + Qdrant
+# Cloud-Only Deployment: GitHub Actions → Cloudflare Workers + D1 + Qdrant
 
-本專案不需要本機安裝 Node.js、Wrangler，也不需要本機設定檔或伺服器。所有安裝、型別檢查、測試、D1 schema migration、Worker 部署都在 **GitHub-hosted Actions runner** 執行。Worker 服務、資料庫與向量資料都在雲端。
+This project does not require local Node.js or Wrangler installation, local configuration files, or a self-hosted server. Installation, type checking, tests, D1 schema migrations, and Worker deployment all run on **GitHub-hosted Actions runners**. The Worker, relational database, and vector store are entirely cloud-hosted.
 
-> `wrangler.example.toml` 是可公開提交的通用範例；正式的 `wrangler.toml` 僅在 GitHub Actions runner 裡由範例和 GitHub Variable 暫時產生，不會提交到 repository。
+> `wrangler.example.toml` is a public, version-controlled template. The production `wrangler.toml` is temporarily generated from that template and a GitHub Variable on the GitHub Actions runner; it is never committed to the repository.
 
-## 架構與執行階段
+## Architecture and Execution Stages
 
-- GitHub：唯一程式碼來源與 CI/CD，`main` 分支。
-- GitHub Actions `CI`：離線型別檢查與單元測試，不需任何 Cloudflare 金鑰。
-- GitHub Actions `Deploy Cloudflare Worker`：雲端 runner 執行驗證、建立暫存 `wrangler.toml`、在遠端 D1 套用 migration、部署 Worker 並設定 Worker Secrets。
-- Cloudflare Workers：公開搜尋網頁、JSON API、Streamable HTTP `/mcp`、受 Bearer Token 保護的 `/internal/ingest`。
-- Cloudflare D1：文章與 chunk 等關聯資料；Workers AI：Embedding。
-- Qdrant Cloud：向量儲存與搜尋。
-- GitHub Actions `Refresh blog index`：每兩天觸發匯入與歷史回填，無需使用者電腦開機。
+- **GitHub:** Single source of truth for code and CI/CD, using the `main` branch.
+- **GitHub Actions – CI:** Offline type checking and unit tests; no Cloudflare credentials required.
+- **GitHub Actions – Deploy Cloudflare Worker:** Runs validation, generates a temporary `wrangler.toml`, applies remote D1 migrations, deploys the Worker, and configures Worker Secrets.
+- **Cloudflare Workers:** Serves the public search site, JSON API, Streamable HTTP `/mcp`, and Bearer-token-protected `/internal/ingest` endpoint.
+- **Cloudflare D1:** Stores relational data for articles and chunks. **Workers AI:** Generates embeddings.
+- **Qdrant Cloud:** Stores and searches vectors.
+- **GitHub Actions – Refresh blog index:** Triggers ingestion and historical backfill every two days without requiring a user's computer to remain on.
 
-## 第 1 步：在 Cloudflare Dashboard 建立 D1
+## Step 1: Create D1 in the Cloudflare Dashboard
 
-1. 進入 Cloudflare Dashboard → Storage & databases → D1 SQL database。
-2. 建立資料庫，名稱：`pulipuli-blog-knowledge`。
-3. 複製建立後顯示的 **Database ID**（UUID）。
+1. Open Cloudflare Dashboard → Storage & databases → D1 SQL database.
+2. Create a database named `pulipuli-blog-knowledge`.
+3. Copy its **Database ID** (UUID).
 
-這個 ID 不是 API 金鑰，不會授權第三方存取；但為了讓公開 repo 可被 Fork 重用，此專案把每位部署者自己的 ID 存在 GitHub Actions Variable，而不是寫死在 Git。
+This ID is not an API key and does not itself grant access. The project nevertheless stores it as a GitHub Actions Variable instead of hard-coding it into Git so that public forks can use their own D1 databases.
 
-## 第 2 步：建立 Qdrant Cloud 叢集
+## Step 2: Create a Qdrant Cloud Cluster
 
-1. 登入 Qdrant Cloud，建立免費叢集。
-2. 保存 **Cluster Endpoint**（Qdrant REST API，通常為 `https://<cluster-host>:6333`）和 API Key，稍後填入 GitHub Secrets，而不是 GitHub 程式碼或 Issue。請保留端點提供的 `https://` 與 `:6333`，不要填叢集管理後台網址。
-3. 選擇 collection 名稱，例如 `pulipuli_blog_chunks`，稍後加入 GitHub Variable `QDRANT_COLLECTION`。
-4. 不需要手動建立 collection：第一次匯入時 Worker 會依 embedding 的實際向量維度建立 collection。
+1. Sign in to Qdrant Cloud and create a free-tier cluster.
+2. Save its **Cluster Endpoint** (the Qdrant REST API address, typically `https://<cluster-host>:6333`) and **API Key**. You will put these in GitHub Secrets, not in repository files or issues. Preserve the provided `https://` and `:6333`, and do not use the cluster management console URL.
+3. Choose a collection name such as `pulipuli_blog_chunks`. You will set it later as the GitHub Variable `QDRANT_COLLECTION`.
+4. You do **not** need to create the collection manually. The Worker creates it during initial ingestion using the embedding model's actual vector dimension.
 
-## 第 3 步：Cloudflare API Token / Account ID
+## Step 3: Obtain a Cloudflare API Token and Account ID
 
-1. 在 Cloudflare Dashboard 找到 Account ID。
-2. 開啟 Cloudflare 帳號的 API Tokens 頁面，建立 **專用、限縮本帳號** 的部署 Token。首次透過 `wrangler deploy` 建立新 Worker，需 Workers 產品層級 **Admin**；若 Worker 已存在才可縮減為該 Worker 的 **Editor**。另需授予操作 D1 migrations 所需的 D1 讀寫權限。請依 Cloudflare 當下介面選取對應的權限，切勿使用 Global API Key。
-3. 建議不要使用 Global API Key，也不要把 Token 填在任何 Git 追蹤的檔案。
+1. Find your Account ID in the Cloudflare Dashboard.
+2. Open your Cloudflare account's API Tokens page and create a **dedicated token scoped to the relevant account**. Creating a new Worker with `wrangler deploy` requires Workers product-level **Admin** permission; once the Worker exists, permissions can be narrowed to **Editor** for that Worker. Grant the D1 read/write permissions needed to run database migrations. Follow the permissions exposed by the current Cloudflare UI, and do not use a Global API Key.
+3. Keep the token out of all Git-tracked files.
 
-參考 Cloudflare 官方文件：[GitHub Actions CI/CD](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) 與 [Workers 權限](https://developers.cloudflare.com/workers/authorization/workers/)。
+For authoritative guidance, see Cloudflare's [GitHub Actions CI/CD](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) and [Workers permissions](https://developers.cloudflare.com/workers/authorization/workers/) documentation.
 
-## 第 4 步：在 GitHub 設定 Repository Variables / Secrets
+## Step 4: Configure GitHub Repository Variables and Secrets
 
-進入本 repository → **Settings → Secrets and variables → Actions**。
+In this repository, navigate to **Settings → Secrets and variables → Actions**.
 
-### Variables（非機密）
+### Variables (Non-Secret)
 
-- `D1_DATABASE_ID`：剛建立的 D1 UUID。
-- `QDRANT_COLLECTION`：例如 `pulipuli_blog_chunks`。
-- `ENABLE_AUTO_DEPLOY`：初次設定可不填，或填 `false`；首次手動部署成功後，設為 `true` 以便後續 `main` 分支 CI 通過即自動部署。
+- `D1_DATABASE_ID`: UUID of the D1 database created above.
+- `QDRANT_COLLECTION`: For example, `pulipuli_blog_chunks`.
+- `ENABLE_AUTO_DEPLOY`: Leave unset or `false` initially. After the first manual deployment succeeds, set `true` to deploy automatically following successful `main` branch CI runs.
 
-### Secrets（不公開）
+### Secrets (Private)
 
-- `CLOUDFLARE_API_TOKEN`：專用部署 API Token。
-- `CLOUDFLARE_ACCOUNT_ID`：Cloudflare Account ID（也可公開，但此流程統一儲存在 Secrets）。
-- `INGEST_TOKEN`：至少 32 bytes 隨機產生的 Bearer Token，供 Worker 的 `/internal/ingest` 使用。
-- `QDRANT_URL`：Qdrant cluster URL（包含 `https://`）。
-- `QDRANT_API_KEY`：Qdrant API Key。
+- `CLOUDFLARE_API_TOKEN`: Dedicated deployment API token.
+- `CLOUDFLARE_ACCOUNT_ID`: Cloudflare Account ID (not inherently secret, but stored consistently with the other CI/CD credentials).
+- `INGEST_TOKEN`: Cryptographically random Bearer Token of at least 32 bytes, used to protect `/internal/ingest`.
+- `QDRANT_URL`: Qdrant cluster URL, including `https://`.
+- `QDRANT_API_KEY`: Qdrant API Key.
 
-Secrets 由 GitHub Actions 部署步驟寫入 Cloudflare Worker Secrets。除了初始在 GitHub Dashboard 設定，不需要手工進入 Cloudflare Worker 重新鍵入。
+The deployment workflow uploads the required GitHub Secrets as Cloudflare Worker Secrets. There is no need to manually re-enter those values in the Cloudflare Worker configuration.
 
-**重要：** `INGEST_TOKEN` 不要貼在對話或公開 repo；正式 Worker 和 GitHub 排程會使用同一個 GitHub Secret。
+**Important:** Do not paste `INGEST_TOKEN` into chats or public repositories. The production Worker and the scheduled GitHub workflow must use the same Secret.
 
-## 第 5 步：純雲端首次部署
+## Step 5: Perform the Initial Cloud Deployment
 
-1. 確認 [CI](../.github/workflows/ci.yml) 已通過。
-2. 在 GitHub repository → **Actions → Deploy Cloudflare Worker → Run workflow**，選擇 `main` 手動執行。
-3. 工作流程依序執行：Node.js 22 安裝與測試、D1 ID 檢查、動態產生 `wrangler.toml`、遠端 `wrangler d1 migrations apply DB --remote`、`wrangler deploy`、Worker Secrets 同步。
-4. 到該次 Workflow logs 取得 `*.workers.dev` 公開網址（若使用自己的網域則採相應網址），開啟 `https://<worker-host>/health` 應回傳 `status: ok` 和 `database: ok`。
-5. 首次部署完成後可把 `ENABLE_AUTO_DEPLOY` 設成 `true`。此後主分支 **push 所觸發的 CI 成功** 才會觸發自動部署；Pull Request 的 CI 不會使用正式部署憑證，避免部署未審核分支。
+1. Confirm that [CI](../.github/workflows/ci.yml) has passed.
+2. Go to GitHub repository → **Actions → Deploy Cloudflare Worker → Run workflow** and manually select `main`.
+3. The workflow runs Node.js 22 setup and tests, verifies the D1 ID, generates `wrangler.toml`, applies remote `wrangler d1 migrations apply DB --remote`, runs `wrangler deploy`, and synchronizes Worker Secrets.
+4. Find the public `*.workers.dev` address in the workflow logs (or use your custom domain). Opening `https://<worker-host>/health` should return `status: ok` and `database: ok`.
+5. Optionally set `ENABLE_AUTO_DEPLOY=true` after the initial deployment. Only **successful CI runs triggered by pushes to the main branch** should initiate automatic deployment. Pull-request CI does not use production deployment credentials, preventing deployments from unreviewed branches.
 
-注意：此 workflow 會修改**遠端正式 D1**，請在合併資料庫 schema migration 前先審核變更及備份策略。
+**Caution:** This workflow modifies the **production remote D1 database**. Review schema migrations and backup strategies before merging database changes.
 
-## 第 6 步：設定兩天一次的文章同步
+## Step 6: Configure Article Synchronization Every Two Days
 
-GitHub Repository → Settings → Secrets and variables → Actions：
+Go to GitHub Repository → Settings → Secrets and variables → Actions:
 
-- 保留上面的 `INGEST_TOKEN` Secret（部署和同步流程共用同一個值）。
-- 新增 `INGEST_URL` Secret：`https://<worker-host>/internal/ingest`。
+- Retain the `INGEST_TOKEN` Secret configured above. Deployment and ingestion share the same value.
+- Add an `INGEST_URL` Secret with the value `https://<worker-host>/internal/ingest`.
 
-到 GitHub Actions → **Refresh blog index** → Run workflow，手動啟動首次匯入（初次請勿選擇重設回填）。工作流程每次分批呼叫 Worker，使用 D1 游標接續歷史文章。定期排程在每天 02:17 UTC 檢查日期奇偶，每兩天執行一次；GitHub Actions 排程時間可能延遲。
+Open GitHub Actions → **Refresh blog index** → **Run workflow** to trigger the initial import manually (do not select the backfill reset option on the first run). The workflow repeatedly calls the Worker in batches and uses the D1 cursor to resume historical imports. The scheduled workflow checks UTC day parity every day at **02:17 UTC** and performs ingestion every two days. GitHub Actions scheduled runs may be delayed.
 
-## 第 7 步：驗證網站與 ChatGPT MCP
+## Step 7: Verify the Website and ChatGPT MCP
 
-- `GET https://<worker-host>/`：搜尋網頁。
-- `GET https://<worker-host>/health`：Worker / D1 健康檢查。
-- `GET https://<worker-host>/api/search?q=Cloudflare&mode=keyword`：先測關鍵字搜尋。
-- `https://<worker-host>/mcp`：在支援 Streamable HTTP 的 MCP 用戶端新增此端點，測試 `search_articles` 和 `get_article`。
+- `GET https://<worker-host>/`: Search website.
+- `GET https://<worker-host>/health`: Worker/D1 health check.
+- `GET https://<worker-host>/api/search?q=Cloudflare&mode=keyword`: Initial keyword search test.
+- `https://<worker-host>/mcp`: Add this endpoint to an MCP client supporting Streamable HTTP, then test `search_articles` and `get_article`.
 
-確認完整回填成功後，再檢查語意／混合搜尋與 Workers AI / Qdrant 配額。
+Once historical backfilling is complete, test semantic and hybrid searches and review Workers AI/Qdrant quota usage.
 
-## 安全與額度
+## Security and Quotas
 
-- GitHub 公開倉庫只能包含範例及非機密程式碼；API Token、向量資料庫金鑰和同步 Token 必須在 GitHub Secrets。
-- 產生的 `wrangler.toml` 在 GitHub 暫時性 runner 中生成並由 `.gitignore` 忽略，**不需要任何本機操作**。
-- Cloudflare Workers、Workers AI、D1、Qdrant Cloud 與 GitHub Actions 的免費額度會變動；首次回填需分批驗證。
-- `npm run dev` 與 `.dev.vars.example` 只保留給其他開發者選用，**不是本專案部署的必要步驟**。
+- A public GitHub repository should contain only templates and non-secret source code. API tokens, vector database keys, and ingestion tokens must be stored in GitHub Secrets.
+- The generated `wrangler.toml` exists only on a temporary GitHub runner and is ignored by `.gitignore`. **No local operations are required.**
+- Free-tier quotas for Cloudflare Workers, Workers AI, D1, Qdrant Cloud, and GitHub Actions may change. Validate the initial backfill in batches.
+- `npm run dev` and `.dev.vars.example` remain available for optional contributor development but are **not required for production deployment**.
