@@ -13,9 +13,12 @@ Public read-only knowledge base for https://blog.pulipuli.info/.
 - [Technical specification](docs/SPEC.md)
 - [Application configuration](config.example.json)
 - [Environment variables](.dev.vars.example)
-- [Cloudflare configuration](wrangler.toml)
+- [Cloudflare configuration template](wrangler.example.toml)
 - [Scheduled workflow](.github/workflows/ingest.yml)
 
-**Status:** architecture and configuration scaffold only. The Worker, database migrations, indexing logic, website, and MCP tools are not yet implemented. Feed URL, embedding model and vector dimensions still require validation.
+## Configuration
+The feed URL in `config.example.json` is `https://blog.pulipuli.info/feeds/posts/default` (Blogger Atom feed, documented by the blog). Copy `config.example.json` to `config.json` and `wrangler.example.toml` to `wrangler.toml` when implementation begins; create actual Cloudflare resources and replace placeholders first. Do not commit secrets.
+
+**Status:** specification and configuration scaffold only; the Worker, migrations, ingestion, search website, and MCP endpoint are not yet implemented. The feed URL should be checked during implementation; embedding model and vector dimensions require validation.
 
 This repository targets Pulipuli's blog specifically; future Facebook ingestion should be a separate instance sharing reusable adapters.
