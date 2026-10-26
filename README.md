@@ -45,7 +45,8 @@ For detailed instructions and Secret permissions, see the [Cloud-Only Deployment
 - `GET /api/search?q=...&limit=...&mode=hybrid|keyword|semantic`: Search articles.
 - `GET /api/articles/:id`: Retrieve the fully indexed text of an article.
 - `GET /health`: Worker and D1 health status.
-- `POST /internal/ingest`: Bearer-token-protected batch synchronization endpoint.
+- `POST /internal/ingest`: Bearer-token-protected batch synchronization endpoint; results include each article's title, URL, and outcome.
+- `GET /internal/ingest/status`: Bearer-token-protected status endpoint showing the last reported in-progress articles and D1 lease expiry.
 - `/mcp`: Read-only MCP Streamable HTTP endpoint.
 
 ## Configuration and Secrets
