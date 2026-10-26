@@ -15,7 +15,7 @@ const makeArticle = (id: string, title: string): ArticleRow => ({
   title,
   published_at: "2026-10-26T00:00:00.000Z",
   updated_at: null,
-  tags_json: '["MCP","Cloudflare"]',
+  tags_json: title.includes("MCP") ? '["MCP","Cloudflare"]' : '["Podman"]',
   full_text: title + "：這是一篇部落格文章。",
   content_hash: "hash-" + id,
   fetched_at: "2026-10-26T00:00:00.000Z",
