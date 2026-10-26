@@ -60,6 +60,22 @@ export interface FeedCursor {
   offset: number;
 }
 
+export type IngestArticleStatus = "inserted" | "updated" | "unchanged" | "failed";
+
+export interface IngestArticleLog {
+  title: string;
+  url: string;
+  status: IngestArticleStatus;
+  error?: string;
+}
+
+export interface IngestProgress {
+  locked: boolean;
+  lockExpiresAt: string | null;
+  remainingLockSeconds: number;
+  current: { startedAt: string; articles: Array<{ title: string; url: string }> } | null;
+}
+
 export interface IngestResult {
   done: boolean;
   mode: "backfill" | "incremental";
@@ -70,4 +86,5 @@ export interface IngestResult {
   failed: number;
   retrying: number;
   errors: string[];
+  articles: IngestArticleLog[];
 }
