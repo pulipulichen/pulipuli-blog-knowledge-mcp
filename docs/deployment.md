@@ -85,6 +85,11 @@ Open GitHub Actions → **Refresh blog index** → **Run workflow** to trigger t
 - To reduce resource pressure on free-tier Workers, the default is now 2 articles per request with concurrency set to 1. This takes more requests but is safer for initial backfills.
 - GitHub Actions serializes ingest workflow runs, and retries temporary HTTP 409 (active lock), 429, 500, 502, 503, 504, or transport errors with exponential-then-capped backoff. Persistent errors still fail the run with details.
 - Individual article failures are stored in D1 `failed_articles` and are retried when due on later ingestion requests. Review the workflow's `failed` total and warning messages.
+- After every successful batch, GitHub Actions logs each processed article's **title**, **URL**, and status (`inserted`, `updated`, `unchanged`, or `failed`). Failed entries also include a short error.
+- When a 409 lock conflict occurs, the response includes `progress.current.articles` and a lock-expiry estimate. GitHub Actions prints that information to identify the blocked batch. This is the **last reported** work; after a Worker crash it may be stale, not proof that an article is still being processed.
+- The protected `GET /internal/ingest/status` endpoint exposes the same progress for authorized checks while a request is active. Send `Authorization: Bearer <INGEST_TOKEN>`; do not put the token in a public URL or public log. No extra D1 migration is needed.
+- An interrupted Worker may leave the D1 lease in place for up to 15 minutes. Keep `reset_backfill` disabled when restarting: the last committed cursor is retained.
+- Newly committed logging changes apply to **new Actions runs**, and the Worker changes apply after the updated Worker is deployed. An already running job does not hot-reload new workflow code.
 
 ## Step 7: Verify the Website and ChatGPT MCP
 
