@@ -1,4 +1,4 @@
-import { runIngest } from "./ingest";
+import { getIngestStatus, runIngest } from "./ingest";
 import { bearerToken, constantTimeEqual, errorResponse, HttpError, isRateLimited, jsonResponse, optionsResponse, readJsonBody, withCors } from "./http";
 import { handleMcpRequest } from "./mcp";
 import { articleToApi, getArticle, SearchError, searchArticles } from "./search";
@@ -88,6 +88,15 @@ async function route(request: Request, env: Env): Promise<Response> {
     return jsonResponse(articleToApi(article));
   }
 
+  if (path === "/internal/ingest/status") {
+    if (request.method !== "GET") return methodNotAllowed("GET, OPTIONS");
+    const supplied = bearerToken(request);
+    if (!env.INGEST_TOKEN || !supplied || !constantTimeEqual(supplied, env.INGEST_TOKEN)) {
+      return errorResponse("Valid bearer token required", 401, "unauthorized");
+    }
+    return jsonResponse(await getIngestStatus(env));
+  }
+
   if (path === "/internal/ingest") {
     if (request.method !== "POST") return methodNotAllowed("POST, OPTIONS");
     const expected = env.INGEST_TOKEN;
@@ -101,9 +110,15 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse(await runIngest(env, { reset }));
     } catch (error) {
       if (error instanceof HttpError) {
-        const response = errorResponse(error.message, error.status, error.code);
-        if (error.code === "ingestion_already_running") response.headers.set("Retry-After", "20");
-        return response;
+        if (error.code === "ingestion_already_running") {
+          const progress = await getIngestStatus(env).catch(() => null);
+          return jsonResponse(
+            { error: { code: error.code, message: error.message }, progress },
+            409,
+            { "Retry-After": "20" },
+          );
+        }
+        return errorResponse(error.message, error.status, error.code);
       }
       return errorResponse(error instanceof Error ? error.message : "Ingestion failed", 500, "ingestion_failed");
     }
