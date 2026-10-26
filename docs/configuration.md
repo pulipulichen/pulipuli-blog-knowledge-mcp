@@ -1,76 +1,57 @@
-# 設定存放位置
+# 設定存放位置（純雲端）
 
-本文件列出 `pulipuli-blog-knowledge-mcp` 各設定值的實際存放位置。密碼、API Token 與私鑰不可提交到 GitHub。
+本專案只透過 **GitHub + GitHub Actions + Cloudflare Dashboard + Qdrant Cloud** 維護正式環境。使用者不需要本機 Clone、不需要安裝 Wrangler，也不需要保留任何本機 `wrangler.toml`。
 
-## Repo 內可公開的範例
+## 公開 GitHub repository（可追蹤）
 
-- `wrangler.example.toml`：Worker 入口、相容性日期、D1/AI binding，以及公開的部落格 feed URL、模型名稱、批次大小等設定。D1 Database ID 是佔位符。
-- `config.example.json`：系統設定與目前實作行為的摘要，供閱讀與規劃使用；Worker 執行時以環境變數為準。
-- `.dev.vars.example`：本機機密欄位名稱與假值。
-- `.github/workflows/ingest.yml`：定期呼叫 Worker 的流程，不直接存放 Token。
+- `wrangler.example.toml`：Cloudflare Worker、D1 / AI binding 與非機密執行設定，`database_id` 是佔位符。
+- `config.example.json`：程式執行設定的公開參考範例。
+- `.dev.vars.example`：僅供其他開發者選用本機開發，**正式部署不使用**。
+- `.github/workflows/ci.yml`：推送／PR 時的型別檢查與單元測試。
+- `.github/workflows/deploy.yml`：首次手動部署、可選擇 main CI 成功後自動部署；在 GitHub runner 暫時產生設定檔、執行遠端 D1 migration、部署 Worker 並同步 Secrets。
+- `.github/workflows/ingest.yml`：每兩天匯入文章與續跑歷史回填。
 
-以上範例可以放在公開 GitHub repo。範例中的網誌網址是公開 RSS，其他非機密設定也不會授予任何帳號權限。
+公開 repo 不應儲存任何真正的 Token。即使 D1 UUID 不是機密，本專案仍採用 GitHub Variable，讓 Fork 可使用各自的 D1。
 
-## 本機 Cloudflare 設定
+## GitHub Actions Variables（非機密）
 
-從 repo 根目錄複製範本：
+GitHub Repository → Settings → Secrets and variables → Actions → **Variables**：
 
-```bash
-cp wrangler.example.toml wrangler.toml
-```
+- `D1_DATABASE_ID`（必填）：Cloudflare D1 資料庫的 UUID。
+- `QDRANT_COLLECTION`（必填）：Qdrant collection 名稱，例如 `pulipuli_blog_chunks`。
+- `ENABLE_AUTO_DEPLOY`（可選）：`true` 才允許 `main` 推送導致 CI 成功後自動部署；首次部署前維持空白或 `false`。
 
-把 `database_id` 換成 `wrangler d1 create pulipuli-blog-knowledge` 回傳的真實 ID。`wrangler.toml` 已列在 `.gitignore`，因此本機資源 ID 和自訂部署設定不會被提交。若你選擇將不含機密的正式 Wrangler 設定交由 Git 管理，可移除該忽略規則後再提交。
+部署時，GitHub Actions 把 `D1_DATABASE_ID` 注入 `wrangler.example.toml` 的佔位符，產生暫時性的 `wrangler.toml`。此檔被 `.gitignore` 忽略，僅存在於該次 GitHub runner。
 
-`[vars]` 放非機密的執行設定，包括：
+## GitHub Actions Secrets（機密）
 
-- `BLOG_FEED_URL`、`BLOG_BASE_URL`：RSS/Atom feed 與部落格網址。
-- `EMBEDDING_MODEL`：Workers AI 模型。預設 `@cf/baai/bge-m3`。
-- `MAX_ARTICLES_PER_REQUEST`、`FEED_PAGE_SIZE`、`INGEST_CONCURRENCY`、`REQUEST_DELAY_MS`：分批大小與抓取節流。
-- `CHUNK_SIZE_CHARS`、`CHUNK_OVERLAP_CHARS`：向量切塊參數。
-- `SEARCH_MAX_RESULTS`：搜尋預設上限。
+GitHub Repository → Settings → Secrets and variables → Actions → **Secrets**：
 
-也可以在 Cloudflare Dashboard 的 Worker → Settings → Variables and Secrets 管理非機密 Variables。不要同時用 Wrangler 與 Dashboard 維護同一個值，避免部署時覆寫。
+- `CLOUDFLARE_API_TOKEN`（必填）：限制於此帳號、授予 Worker 建立／部署及 D1 migration 權限的專用 API Token。
+- `CLOUDFLARE_ACCOUNT_ID`（必填）：Cloudflare Account ID（本身不是密碼，沿用 Cloudflare CI/CD Secret 慣例）。
+- `INGEST_TOKEN`（必填）：用於保護文章匯入 API 的隨機長 Token。此值由部署 Workflow 同步進 Worker Secret，也用於定期匯入 Workflow。
+- `QDRANT_URL`（必填）：Qdrant Cluster Endpoint，包含 `https://`，例如 `https://example.aws.cloud.qdrant.io:6333`。
+- `QDRANT_API_KEY`（必填）：Qdrant Cloud API Key。
+- `INGEST_URL`（第一次部署完成後填入）：`https://<worker-host>/internal/ingest`，供 `Refresh blog index` 使用。
 
-## 正式環境機密：Cloudflare Worker Secrets
+上述 Secret 都只在 GitHub 設定畫面輸入，不要提交至程式碼或對話。
 
-在 Cloudflare Dashboard 的 Worker → Settings → Variables and Secrets 建立 Secret，或從終端機逐一輸入：
+## Cloudflare Worker（執行時）
 
-```bash
-npx wrangler secret put INGEST_TOKEN
-npx wrangler secret put QDRANT_URL
-npx wrangler secret put QDRANT_API_KEY
-npx wrangler secret put QDRANT_COLLECTION
-```
+正式 Worker 運行時的設定來源如下：
 
-`INGEST_TOKEN` 保護 `/internal/ingest`；Qdrant 設定只由 Worker 伺服器端使用。公開搜尋與 MCP 工具不會回傳這些值。Qdrant collection 在首次成功寫入時，會依 Workers AI 回傳的 embedding 長度自動建立。
+- **D1 binding `DB`、AI binding `AI`**：由 `wrangler.example.toml` 與部署時替換的 Database ID 定義。
+- **公開 Variables**：`BLOG_FEED_URL`、`BLOG_BASE_URL`、`EMBEDDING_MODEL`、`MAX_ARTICLES_PER_REQUEST`、`FEED_PAGE_SIZE`、`INGEST_CONCURRENCY`、`REQUEST_DELAY_MS`、`CHUNK_SIZE_CHARS`、`CHUNK_OVERLAP_CHARS`、`SEARCH_MAX_RESULTS`，定義在公開的 `wrangler.example.toml`。
+- **Worker Secrets**：`INGEST_TOKEN`、`QDRANT_URL`、`QDRANT_API_KEY`、`QDRANT_COLLECTION`，由 GitHub Actions 部署同步。請勿同時在 Cloudflare Dashboard 人工維護同名值，避免下次部署覆寫。
 
-## 本機開發機密：`.dev.vars`
+## 無本機操作的部署順序
 
-```bash
-cp .dev.vars.example .dev.vars
-```
+1. Cloudflare Dashboard 建立 D1，Qdrant Cloud 建立叢集。
+2. GitHub Actions Variables / Secrets 填齊必要值。
+3. GitHub → Actions → **Deploy Cloudflare Worker** → **Run workflow**。
+4. Workflow 在 GitHub runner 執行單元測試、D1 遠端 migration、Worker 部署與 Secrets 同步。
+5. Worker 的 `/health` 驗證成功後，設定 `INGEST_URL`。
+6. GitHub → Actions → **Refresh blog index** → **Run workflow** 開始首次索引。
+7. 如有需要，設定 `ENABLE_AUTO_DEPLOY=true`；之後正常推送到 main 且 CI 成功時自動部署。
 
-編輯 `.dev.vars` 填入本機 Worker 測試用的 Token、Qdrant URL 與 API Key。`.dev.vars` 已被 `.gitignore` 忽略；不要把它改名後提交，也不要將正式機密放在 `wrangler.toml`。
-
-## GitHub Actions Secrets
-
-前往 GitHub Repository → Settings → Secrets and variables → Actions，新增：
-
-- `INGEST_URL`：部署後 Worker 的完整同步網址，例如 `https://<worker-host>/internal/ingest`。
-- `INGEST_TOKEN`：必須與 Cloudflare Worker Secret `INGEST_TOKEN` 相同。
-
-GitHub Actions Secrets 供排程工作使用；Cloudflare Worker Secrets 供 Worker 執行時使用，需在兩處各自設定。
-
-## 由程式讀取的環境變數
-
-- Wrangler Variables：`BLOG_FEED_URL`、`BLOG_BASE_URL`、`EMBEDDING_MODEL`、`MAX_ARTICLES_PER_REQUEST`、`FEED_PAGE_SIZE`、`INGEST_CONCURRENCY`、`REQUEST_DELAY_MS`、`CHUNK_SIZE_CHARS`、`CHUNK_OVERLAP_CHARS`、`SEARCH_MAX_RESULTS`。
-- Wrangler bindings：`DB`（D1）、`AI`（Workers AI）。
-- Worker Secrets／本機 `.dev.vars`：`INGEST_TOKEN`、`QDRANT_URL`、`QDRANT_API_KEY`、`QDRANT_COLLECTION`。
-
-## 上線檢查
-
-1. `git status` 不應顯示 `.dev.vars` 或 `wrangler.toml`。
-2. Cloudflare Worker 已建立 D1 binding、AI binding，且 D1 migration 已套用。
-3. Worker Secret 與 GitHub Actions Secret 的 `INGEST_TOKEN` 完全一致。
-4. GitHub Actions 的 `INGEST_URL` 指向已部署的 `/internal/ingest`。
-5. `/health`、`/api/search` 與 `/mcp` 可由公開 HTTPS 網址連線；只有帶 Token 的 POST 才能啟動同步。
+正式部署操作請見 [部署指南](deployment.md)。本機開發僅是其他貢獻者的**選用流程**，不是主架構的一部分。
