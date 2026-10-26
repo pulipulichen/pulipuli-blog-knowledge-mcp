@@ -71,6 +71,39 @@ describe("public Worker routes (without Cloudflare credentials)", () => {
     }
   });
 
+  it("keeps the live import status protected by the ingest token", async () => {
+    const env = mockEnv();
+    const endpoint = "https://worker.example.test/internal/ingest/status";
+    const unauthorized = await worker.fetch(new Request(endpoint), env);
+    expect(unauthorized.status).toBe(401);
+
+    env.DB = {
+      prepare(sql: string) {
+        if (sql.includes("SELECT token, expires_at FROM sync_lock")) {
+          return { first: async () => ({ token: "other-run", expires_at: Math.floor(Date.now() / 1000) + 120 }) };
+        }
+        if (sql.includes("SELECT value FROM sync_state")) {
+          return { bind: () => ({ first: async () => ({
+            value: JSON.stringify({
+              startedAt: "2026-10-26T15:00:00.000Z",
+              articles: [{ title: "Sample Article", url: "https://blog.pulipuli.info/article.html" }],
+            }),
+          }) }) };
+        }
+        throw new Error(`Unexpected SQL: ${sql}`);
+      },
+    } as unknown as D1Database;
+
+    const authorized = await worker.fetch(new Request(endpoint, {
+      headers: { authorization: "Bearer unit-test-token" },
+    }), env);
+    expect(authorized.status).toBe(200);
+    await expect(authorized.json()).resolves.toMatchObject({
+      locked: true,
+      current: { articles: [{ title: "Sample Article", url: "https://blog.pulipuli.info/article.html" }] },
+    });
+  });
+
   it("returns Retry-After on an ingestion lock conflict", async () => {
     const env = mockEnv();
     env.DB = {
