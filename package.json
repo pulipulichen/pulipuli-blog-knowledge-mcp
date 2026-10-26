@@ -1,0 +1,23 @@
+{
+  "name": "pulipuli-blog-knowledge-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.toml",
+    "deploy": "wrangler deploy --config wrangler.toml",
+    "types": "wrangler types --config wrangler.toml",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.toml",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote --config wrangler.toml"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "fast-xml-parser": "^5.3.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261024.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.152.0"
+  }
+}

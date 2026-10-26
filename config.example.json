@@ -8,14 +8,16 @@
     ],
     "backfill": {
       "enabled": true,
-      "strategy": "sitemap-or-archive"
+      "strategy": "blogger-atom-pagination"
     }
   },
   "ingestion": {
     "interval_days": 2,
-    "max_articles_per_run": 100,
+    "max_articles_per_request": 10,
+    "feed_page_size": 100,
     "concurrency": 2,
-    "request_delay_ms": 1000
+    "request_delay_ms": 1000,
+    "retry_failed_articles": true
   },
   "storage": {
     "metadata": "cloudflare-d1",
@@ -23,18 +25,22 @@
   },
   "embedding": {
     "provider": "cloudflare-workers-ai",
-    "model": "CONFIGURE_VERIFIED_MULTILINGUAL_MODEL",
+    "model": "@cf/baai/bge-m3",
     "dimensions": null,
+    "dimension_strategy": "detected-from-first-embedding",
     "chunk_size_chars": 900,
     "chunk_overlap_chars": 150
   },
   "search": {
     "default_mode": "hybrid",
-    "max_results": 20
+    "max_results": 20,
+    "keyword_strategy": "substring-search-for-Chinese-text",
+    "hybrid_ranking": "reciprocal-rank-fusion"
   },
   "mcp": {
     "transport": "streamable-http",
     "path": "/mcp",
-    "read_only": true
+    "read_only": true,
+    "tools": ["search_articles", "get_article"]
   }
 }
