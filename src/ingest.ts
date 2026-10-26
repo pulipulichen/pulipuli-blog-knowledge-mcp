@@ -4,7 +4,7 @@ import { getConfig, feedUrlWithPagination, nextStartIndexUrl } from "./config";
 import { fetchFeedPage } from "./feed";
 import { HttpError, normalizeText, sha256Hex, sleep, splitIntoChunks, stableUuid } from "./http";
 import { deletePoints, embedTexts, ensureCollection, makeVectorId, upsertPoints, type VectorPoint } from "./qdrant";
-import type { ArticleRow, Env, FeedCursor, FeedEntry, IngestResult } from "./types";
+import type { ArticleRow, Env, FeedCursor, FeedEntry, IngestArticleLog, IngestProgress, IngestResult } from "./types";
 
 interface IngestCounters {
   scanned: number;
@@ -14,6 +14,7 @@ interface IngestCounters {
   failed: number;
   retrying: number;
   errors: string[];
+  articles: IngestArticleLog[];
 }
 
 async function getState(env: Env, key: string): Promise<string | null> {
@@ -26,6 +27,40 @@ async function setState(env: Env, key: string, value: string): Promise<void> {
     INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).bind(key, value, new Date().toISOString()).run();
+}
+
+/** Progress is advisory: Workers can terminate before the last heartbeat is cleared. */
+export async function getIngestStatus(env: Env): Promise<IngestProgress> {
+  const [lock, active] = await Promise.all([
+    env.DB.prepare("SELECT token, expires_at FROM sync_lock WHERE id = 1")
+      .first<{ token: string | null; expires_at: number }>(),
+    env.DB.prepare("SELECT value FROM sync_state WHERE key = ?")
+      .bind("ingest_active_articles")
+      .first<{ value: string }>(),
+  ]);
+  const now = Math.floor(Date.now() / 1_000);
+  const locked = Boolean(lock?.token) && (lock?.expires_at ?? 0) > now;
+  let current: IngestProgress["current"] = null;
+  if (locked && active?.value) {
+    try {
+      const parsed = JSON.parse(active.value) as IngestProgress["current"];
+      if (parsed && typeof parsed.startedAt === "string" && Array.isArray(parsed.articles)) {
+        current = {
+          startedAt: parsed.startedAt,
+          articles: parsed.articles.filter((item) => typeof item?.title === "string" && typeof item?.url === "string"),
+        };
+      }
+    } catch {
+      // Treat a missing or corrupt progress heartbeat as unavailable.
+    }
+  }
+  const remainingLockSeconds = locked ? Math.max(0, (lock?.expires_at ?? now) - now) : 0;
+  return {
+    locked,
+    lockExpiresAt: locked ? new Date((lock?.expires_at ?? now) * 1_000).toISOString() : null,
+    remainingLockSeconds,
+    current,
+  };
 }
 
 async function acquireLock(env: Env): Promise<string> {
@@ -259,13 +294,16 @@ async function recordRun(
 }
 
 async function processEntrySafely(env: Env, entry: FeedEntry, counters: IngestCounters): Promise<void> {
+  const article = { title: entry.title, url: entry.url };
   try {
     const status = await indexEntry(env, entry);
     counters[status] += 1;
+    counters.articles.push({ ...article, status });
   } catch (error) {
     counters.failed += 1;
     const message = error instanceof Error ? error.message : "Unknown ingestion error";
     if (counters.errors.length < 5) counters.errors.push(`${entry.title.slice(0, 80)}: ${message.slice(0, 160)}`);
+    counters.articles.push({ ...article, status: "failed", error: message.slice(0, 200) });
     await saveFailure(env, entry, error).catch(() => undefined);
   }
 }
@@ -279,7 +317,7 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
   const config = getConfig(env);
   const runId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
-  const counters: IngestCounters = { scanned: 0, inserted: 0, updated: 0, unchanged: 0, failed: 0, retrying: 0, errors: [] };
+  const counters: IngestCounters = { scanned: 0, inserted: 0, updated: 0, unchanged: 0, failed: 0, retrying: 0, errors: [], articles: [] };
   let mode: "backfill" | "incremental" = "backfill";
 
   try {
@@ -310,6 +348,10 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
     for (let offset = 0; offset < batch.length; offset += config.concurrency) {
       const group = batch.slice(offset, offset + config.concurrency);
       counters.scanned += group.length;
+      await setState(env, "ingest_active_articles", JSON.stringify({
+        startedAt: new Date().toISOString(),
+        articles: group.map(({ title, url }) => ({ title, url })),
+      }));
       await Promise.all(group.map((entry) => processEntrySafely(env, entry, counters)));
       if (config.requestDelayMs > 0 && offset + group.length < batch.length) {
         await sleep(config.requestDelayMs);
@@ -323,6 +365,10 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
       try {
         const entry = JSON.parse(row.entry_json) as FeedEntry;
         counters.retrying += 1;
+        await setState(env, "ingest_active_articles", JSON.stringify({
+          startedAt: new Date().toISOString(),
+          articles: [{ title: entry.title, url: entry.url }],
+        }));
         await processEntrySafely(env, entry, counters);
       } catch {
         // Malformed failure records remain visible for manual cleanup.
@@ -358,6 +404,7 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
     await recordRun(env, runId, mode, counters, "failed", summary.slice(0, 500)).catch(() => undefined);
     throw error;
   } finally {
+    await setState(env, "ingest_active_articles", "").catch(() => undefined);
     await releaseLock(env, lockToken).catch(() => undefined);
   }
 }
