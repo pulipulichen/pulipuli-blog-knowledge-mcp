@@ -95,6 +95,14 @@ jobs:
                 000) if [[ "${curl_exit}" -ne 0 ]]; then retryable=true; fi ;;
               esac
 
+              # A 409 means D1 still holds an ingest lock. Show the last
+              # reported article(s) so an interrupted batch is identifiable.
+              if [[ "${http_status}" == "409" ]] && jq -e '.progress.current.articles | type == "array"' <<< "${response}" >/dev/null 2>&1; then
+                echo "::notice::Another import currently holds the lock; last reported work (may be stale after Worker termination):"
+                jq -r '.progress.current.articles[] | "  Title: \(.title)\n  URL: \(.url)"' <<< "${response}"
+                jq -r '"  Lock expires at: \(.progress.lockExpiresAt); remaining: \(.progress.remainingLockSeconds)s"' <<< "${response}"
+              fi
+
               if [[ "${retryable}" != "true" || "${request_attempt}" -ge "${max_request_attempts}" ]]; then
                 echo "::error::Ingestion batch ${batch_number} failed (HTTP ${http_status}, curl ${curl_exit}) after ${request_attempt} attempt(s): ${response:0:500}" >&2
                 exit 1
@@ -111,7 +119,10 @@ jobs:
             done
             request_body='{}'
 
+            echo "::group::Batch ${batch_number}: article results"
             echo "${response}" | jq '{mode, done, scanned, inserted, updated, unchanged, failed, retrying, errors}'
+            echo "${response}" | jq -r '.articles[]? | "[\(.status)] \(.title)\nURL: \(.url)\(if .error then "\nError: " + .error else "" end)"'
+            echo "::endgroup::"
             total_scanned=$((total_scanned + $(echo "${response}" | jq -r '.scanned // 0')))
             total_inserted=$((total_inserted + $(echo "${response}" | jq -r '.inserted // 0')))
             total_updated=$((total_updated + $(echo "${response}" | jq -r '.updated // 0')))
