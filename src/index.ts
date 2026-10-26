@@ -100,7 +100,11 @@ async function route(request: Request, env: Env): Promise<Response> {
       const reset = Boolean(body && typeof body === "object" && "reset" in body && (body as { reset?: unknown }).reset === true);
       return jsonResponse(await runIngest(env, { reset }));
     } catch (error) {
-      if (error instanceof HttpError) return errorResponse(error.message, error.status, error.code);
+      if (error instanceof HttpError) {
+        const response = errorResponse(error.message, error.status, error.code);
+        if (error.code === "ingestion_already_running") response.headers.set("Retry-After", "20");
+        return response;
+      }
       return errorResponse(error instanceof Error ? error.message : "Ingestion failed", 500, "ingestion_failed");
     }
   }
