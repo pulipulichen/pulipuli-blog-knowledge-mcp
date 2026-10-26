@@ -26,9 +26,13 @@ const REMOVE_SELECTOR = "script,style,noscript,svg,nav,header,footer,aside,form,
 export function canonicalizeUrl(value: string, baseUrl: string): string {
   const url = new URL(value, baseUrl);
   url.hash = "";
-  for (const key of [...url.searchParams.keys()]) {
-    if (/^(utm_.+|fbclid|gclid|mc_cid|mc_eid)$/i.test(key)) url.searchParams.delete(key);
-  }
+  // Collect first so deleting parameters cannot skip entries during iteration.
+  // URLSearchParams.forEach works without iterable DOM type declarations.
+  const trackingKeys: string[] = [];
+  url.searchParams.forEach((_value, key) => {
+    if (/^(utm_.+|fbclid|gclid|mc_cid|mc_eid)$/i.test(key)) trackingKeys.push(key);
+  });
+  for (const key of trackingKeys) url.searchParams.delete(key);
   return url.toString();
 }
 
