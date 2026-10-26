@@ -1,0 +1,12 @@
+name = "pulipuli-blog-knowledge-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-10-26"
+
+# Add D1 binding after creating the database.
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "pulipuli-blog-knowledge"
+# database_id = "REPLACE_WITH_REAL_DATABASE_ID"
+
+# [ai]
+# binding = "AI"
