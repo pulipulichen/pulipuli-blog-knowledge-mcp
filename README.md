@@ -14,7 +14,7 @@
 
 ## 測試與 CI
 
-使用 Node.js 22，可在沒有 Cloudflare / Qdrant 金鑰的情況下執行：
+GitHub Actions CI 會自動在雲端使用 Node.js 22 執行。下列指令僅供其他開發者選用，本專案使用者**不必在本機操作**：
 
 ```bash
 npm install
@@ -23,27 +23,20 @@ npm test
 ```
 
 GitHub Actions [CI](.github/workflows/ci.yml) 在推送 `main`、提出 Pull Request 或手動啟動時執行型別檢查與離線單元測試；完整範圍及限制請見 [測試指南](docs/testing.md)。
-## 快速開始
+## 快速開始（100% 雲端，無需本機環境）
 
-1. 安裝 Node.js 與 npm，複製 `wrangler.example.toml` 為 `wrangler.toml`，填入 D1 Database ID。`wrangler.toml`、`.dev.vars` 已加入 `.gitignore`。
-2. 安裝相依套件：`npm install`。
-3. 建立 Cloudflare D1，並把 Database ID 填入本機 `wrangler.toml`：
+1. 在 Cloudflare Dashboard 建立 D1：`pulipuli-blog-knowledge`，複製 Database ID。
+2. 在 Qdrant Cloud 建立叢集，取得 Cluster URL 與 API Key。
+3. 在 GitHub Repository → Settings → Secrets and variables → Actions 設定：
+   - **Variables**：`D1_DATABASE_ID`、`QDRANT_COLLECTION`（例如 `pulipuli_blog_chunks`）。
+   - **Secrets**：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`INGEST_TOKEN`、`QDRANT_URL`、`QDRANT_API_KEY`。
+4. 到 GitHub → Actions → **Deploy Cloudflare Worker** → **Run workflow**。GitHub 的雲端 runner 會自行安裝 Node.js / Wrangler、通過測試、套用遠端 D1 migration 並部署 Worker，完全不需要本機設定。
+5. 部署成功後將 Worker 的 `https://<worker-host>/internal/ingest` 設為 GitHub Secret `INGEST_URL`，手動執行一次 **Refresh blog index** 開始匯入。
+6. 初次部署驗證完成後，可設定 GitHub Variable `ENABLE_AUTO_DEPLOY=true`，讓 `main` 的 CI 通過後自動部署。
 
-   ```bash
-   npx wrangler d1 create pulipuli-blog-knowledge
-   ```
+> 正式 `wrangler.toml` 只會由 GitHub Actions 在暫時性 runner 上從 `wrangler.example.toml` 產生；本專案**不需要本機安裝、Clone 或部署**。
 
-4. 在本機建立 `.dev.vars`，參考 `.dev.vars.example` 填入 Ingestion Token 與 Qdrant 設定。
-5. 建立資料表並部署：
-
-   ```bash
-   npm run db:migrate:remote
-   npm run deploy
-   ```
-
-6. 在 GitHub Repository Secrets 設定 `INGEST_URL` 與 `INGEST_TOKEN`，啟用 Actions 後即可排程同步。初次索引會自動依 Workers AI 回傳的向量長度建立 Qdrant collection。
-
-完整 Cloudflare、Qdrant、GitHub Secrets 與 ChatGPT MCP 設定步驟請見 [部署指南](docs/deployment.md) 和 [設定存放位置](docs/configuration.md)。
+詳細操作與 Secret 權限請見 [純雲端部署指南](docs/deployment.md)、[設定存放位置](docs/configuration.md)。
 
 ## 路由
 
@@ -57,9 +50,9 @@ GitHub Actions [CI](.github/workflows/ci.yml) 在推送 `main`、提出 Pull Req
 ## 設定檔與機密
 
 - `wrangler.example.toml`、`config.example.json`、`.dev.vars.example` 是可公開的範例。
-- 正式 Worker 的 D1 binding 與非機密執行設定放在本機 `wrangler.toml` 或 Cloudflare Dashboard Variables。
-- Worker 的 `INGEST_TOKEN`、`QDRANT_URL`、`QDRANT_API_KEY` 使用 Cloudflare Worker Secrets；本機開發值放在未追蹤的 `.dev.vars`。
-- GitHub Actions 使用 Repository Secrets 保存 `INGEST_URL` 與相同的 `INGEST_TOKEN`。
+- 正式 D1 UUID 放在 GitHub Actions Variable `D1_DATABASE_ID`，GitHub runner 產生被忽略的 `wrangler.toml`。
+- `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`INGEST_TOKEN`、`QDRANT_URL`、`QDRANT_API_KEY` 放在 GitHub Actions Secrets；部署 Workflow 會同步必要的 Worker Secrets。
+- `QDRANT_COLLECTION` 與 `ENABLE_AUTO_DEPLOY` 放在 GitHub Actions Variables，`INGEST_URL` 放在 GitHub Actions Secret。
 
 ## 架構文件
 
