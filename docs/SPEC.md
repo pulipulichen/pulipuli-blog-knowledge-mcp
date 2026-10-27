@@ -7,7 +7,7 @@ This deployment indexes only Pulipuli Blog. The source adapter remains reusable,
 ## Architecture and Data Flow
 
 1. GitHub Actions invokes a Worker ingestion endpoint protected by a Bearer Token every two days.
-2. The Worker reads the Blogger Atom feed, follows `rel=next` and `start-index` pagination, and stores the backfill cursor in D1.
+2. The Worker reads Blogger's summary JSON feed, follows `rel=next` and `start-index` pagination, and stores the backfill cursor in D1. Configured Blogger Atom URLs and existing cursors are adapted without resetting the offset; generic Atom and RSS feeds remain supported.
 3. The Worker checks `robots.txt` before fetching actual article pages and extracting their body text. RSS excerpts are not treated as full text.
 4. Using the canonical URL as the unique key, the Worker upserts each article's title, URL, dates, tags, full text, and content hash into D1.
 5. When an article changes, it is chunked again. Cloudflare Workers AI `@cf/baai/bge-m3` generates multilingual embeddings, which are stored in Qdrant Cloud. The Qdrant collection is created on the first write using the actual vector size.
@@ -48,7 +48,7 @@ Search results include article ID, title, URL, date, tags, excerpt, and score. O
 - Each Worker request processes at most 10 articles with no more than 2 concurrent fetches. The workflow repeatedly invokes the Worker until that synchronization run completes.
 - The cursor advances only after article-body extraction, vector upsert, and D1 upsert succeed. Per-article failures are recorded for delayed retries.
 - Upstream HTTP 408, 425, 429, and 5xx responses, as well as network failures, are retried with exponential backoff, respecting `Retry-After`.
-- `/internal/ingest` uses a D1 lock to prevent overlapping batches. Upserts use canonical URLs and stable IDs for idempotency.
+- `/internal/ingest` uses a 120-second D1 lease with a 30-second renewal heartbeat to prevent overlapping batches. Ownership is checked before committing articles and checkpoints; cleanup is conditional on the lease token. Upserts use canonical URLs and stable IDs for idempotency.
 
 ## Security and Quotas
 
@@ -59,6 +59,6 @@ Search results include article ID, title, URL, date, tags, excerpt, and score. O
 
 ## Implementation Limitations
 
-- Initial backfilling depends on Blogger Atom feed pagination. A sitemap or archive adapter may be needed if the source later removes historical feed pages.
+- Initial backfilling depends on Blogger feed pagination. A sitemap or archive adapter may be needed if the source later removes historical feed pages.
 - Body extraction currently prioritizes standard HTML `article` and `main` elements, Blogger `.post-body`, and `.entry-content` selectors. Unusual templates may need additional rules.
 - D1 keyword search currently scans article text, which is suitable for validating a personal-blog-sized dataset. Consider FTS5 or an external full-text search engine as volume increases.

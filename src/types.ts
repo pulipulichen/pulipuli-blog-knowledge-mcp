@@ -73,7 +73,7 @@ export interface IngestProgress {
   locked: boolean;
   lockExpiresAt: string | null;
   remainingLockSeconds: number;
-  current: { startedAt: string; articles: Array<{ title: string; url: string }> } | null;
+  current: { startedAt: string; phase?: string; articles: Array<{ title: string; url: string }> } | null;
 }
 
 export interface IngestResult {

@@ -10,6 +10,7 @@ The production environment is managed entirely through **GitHub, GitHub Actions,
 - `.github/workflows/ci.yml`: Type checking and unit tests for pushes and pull requests.
 - `.github/workflows/deploy.yml`: Initial manual deployment and optional automatic deployment after successful CI on `main`. Generates a temporary configuration file, applies remote D1 migrations, deploys the Worker, and synchronizes Secrets.
 - `.github/workflows/ingest.yml`: Article ingestion every two days and resumable historical backfills.
+- `.github/scripts/ingest.sh`: Ingestion client with separate lock-wait and upstream-error retry budgets, response diagnostics, and per-article logs.
 
 Do not store real tokens in the public repository. Although a D1 UUID is not itself a secret, this project keeps it in a GitHub Variable so forks can provide their own database ID.
 
@@ -43,6 +44,8 @@ The production Worker receives its configuration from the following sources:
 - **D1 binding `DB` and AI binding `AI`:** Defined by `wrangler.example.toml`, with the database ID substituted during deployment.
 - **Public variables:** `BLOG_FEED_URL`, `BLOG_BASE_URL`, `EMBEDDING_MODEL`, `MAX_ARTICLES_PER_REQUEST`, `FEED_PAGE_SIZE`, `INGEST_CONCURRENCY`, `REQUEST_DELAY_MS`, `CHUNK_SIZE_CHARS`, `CHUNK_OVERLAP_CHARS`, and `SEARCH_MAX_RESULTS`, defined in the public `wrangler.example.toml`.
 - **Worker Secrets:** `INGEST_TOKEN`, `QDRANT_URL`, `QDRANT_API_KEY`, and `QDRANT_COLLECTION`, synchronized during deployment by GitHub Actions. Do not also maintain separate values with the same names in the Cloudflare Dashboard, because a later deployment could overwrite them.
+
+The production template defaults to one article per request, including due retries. Keep this setting for the free Worker plan. Blogger full Atom feed URLs are adapted to summary JSON at fetch time, so `BLOG_FEED_URL` and existing D1 pagination checkpoints do not need to be changed.
 
 ## Deployment Sequence (No Local Steps)
 

@@ -4,7 +4,7 @@ Core tests do not require Cloudflare, Qdrant, or any API keys. CI does not trigg
 
 ## Running Tests Locally (Optional for Contributors)
 
-Requirements: Node.js 22 and npm.
+Requirements: Node.js 22.13 or newer and npm. The ingestion SQL tests use Node's built-in `node:sqlite`; the Actions client tests also require Bash, `jq`, and standard Unix utilities (available on the Ubuntu GitHub runner).
 
 ```bash
 npm install
@@ -18,7 +18,10 @@ Use `npm run test:watch` during development. Tests run with Vitest, and network 
 
 - `tests/d1-limits.test.ts`: D1's 100-variable SQL bind limit, eight-column chunk INSERT batch sizing, and invalid parameters.
 - `tests/http.test.ts`: Bearer Token handling, JSON length limits, HTTP 429 retries, canonical URLs, Unicode chunking, hashing, and UUIDs.
-- `tests/feed.test.ts`: Blogger Atom and RSS parsing, tags and timestamps, same-origin pagination restrictions, and error responses.
+- `tests/feed.test.ts`: Blogger summary JSON, Atom and RSS parsing, saved pagination compatibility, tags and timestamps, same-origin pagination restrictions, and error responses.
+- `tests/ingest-lock.test.ts`: Real SQLite SQL for exclusive acquisition, heartbeat renewal, crash expiry, ownership loss, and conditional cleanup.
+- `tests/ingest.test.ts`: Article/chunk commits, cursor resumption, retry budgets, failure persistence, and lease-loss handling against real SQLite with mocked network/AI services.
+- `tests/ingest-client.test.ts`: Execute the actual Bash Actions client with simulated curl responses; verify 503 diagnostics, more than 24 lock polls, retry limits, bounded lock waits, result validation, and first-batch reset handling.
 - `tests/qdrant.test.ts`: Workers AI embedding formats, Qdrant collection creation/vector dimension validation, and result mapping.
 - `tests/search.test.ts`: Keyword/semantic search, RRF hybrid ranking, duplicate chunk removal, query validation, and article lookup.
 - `tests/routes.test.ts`: Search home page, health checks, search API, unauthorized ingestion, CORS, and missing articles.

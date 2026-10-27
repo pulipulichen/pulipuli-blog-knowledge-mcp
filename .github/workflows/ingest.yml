@@ -34,6 +34,10 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Checkout ingestion client
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
       - name: Run resumable ingestion batches
         if: steps.gate.outputs.run == 'true'
         env:
@@ -41,107 +45,4 @@ jobs:
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
           RESET_BACKFILL: ${{ github.event_name == 'workflow_dispatch' && inputs.reset_backfill || false }}
         shell: bash
-        run: |
-          set -euo pipefail
-          : "${INGEST_URL:?Set the INGEST_URL repository secret}"
-          : "${INGEST_TOKEN:?Set the INGEST_TOKEN repository secret}"
-
-          request_body='{}'
-          if [[ "${RESET_BACKFILL}" == "true" ]]; then
-            request_body='{"reset":true}'
-          fi
-
-          done=false
-          total_scanned=0
-          total_inserted=0
-          total_updated=0
-          total_unchanged=0
-          total_failed=0
-
-          response_file="$(mktemp)"
-          trap 'rm -f "${response_file}"' EXIT
-          max_request_attempts=24
-
-          for batch_number in $(seq 1 10000); do
-            # A timed-out Worker may still own the D1 lease; 409 is retryable.
-            # HTTP 503/429 and transport errors can also be temporary.
-            request_attempt=1
-            while :; do
-              curl_exit=0
-              if http_status="$(curl --silent --show-error \
-                --output "${response_file}" --write-out '%{http_code}' \
-                --connect-timeout 15 --max-time 120 \
-                -X POST "${INGEST_URL}" \
-                -H "Authorization: Bearer ${INGEST_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "${request_body}")"; then
-                :
-              else
-                curl_exit=$?
-              fi
-              response="$(cat "${response_file}")"
-
-              if [[ "${curl_exit}" -eq 0 && "${http_status}" == "200" ]]; then
-                if ! jq -e '(.done | type) == "boolean" and (.scanned | type) == "number" and (.failed | type) == "number"' <<< "${response}" >/dev/null; then
-                  echo "::error::Worker returned HTTP 200 without a valid ingestion result: ${response:0:500}" >&2
-                  exit 1
-                fi
-                break
-              fi
-
-              retryable=false
-              case "${http_status}" in
-                409|429|500|502|503|504) retryable=true ;;
-                000) if [[ "${curl_exit}" -ne 0 ]]; then retryable=true; fi ;;
-              esac
-
-              # A 409 means D1 still holds an ingest lock. Show the last
-              # reported article(s) so an interrupted batch is identifiable.
-              if [[ "${http_status}" == "409" ]] && jq -e '.progress.current.articles | type == "array"' <<< "${response}" >/dev/null 2>&1; then
-                echo "::notice::Another import currently holds the lock; last reported work (may be stale after Worker termination):"
-                jq -r '.progress.current.articles[] | "  Title: \(.title)\n  URL: \(.url)"' <<< "${response}"
-                jq -r '"  Lock expires at: \(.progress.lockExpiresAt); remaining: \(.progress.remainingLockSeconds)s"' <<< "${response}"
-              fi
-
-              if [[ "${retryable}" != "true" || "${request_attempt}" -ge "${max_request_attempts}" ]]; then
-                echo "::error::Ingestion batch ${batch_number} failed (HTTP ${http_status}, curl ${curl_exit}) after ${request_attempt} attempt(s): ${response:0:500}" >&2
-                exit 1
-              fi
-
-              if (( request_attempt < 5 )); then
-                retry_delay=$((2 ** request_attempt))
-              else
-                retry_delay=60
-              fi
-              echo "::warning::Ingestion batch ${batch_number} returned HTTP ${http_status} (curl ${curl_exit}); attempt ${request_attempt}/${max_request_attempts}; retrying in ${retry_delay}s"
-              sleep "${retry_delay}"
-              request_attempt=$((request_attempt + 1))
-            done
-            request_body='{}'
-
-            echo "::group::Batch ${batch_number}: article results"
-            echo "${response}" | jq '{mode, done, scanned, inserted, updated, unchanged, failed, retrying, errors}'
-            echo "${response}" | jq -r '.articles[]? | "[\(.status)] \(.title)\nURL: \(.url)\(if .error then "\nError: " + .error else "" end)"'
-            echo "::endgroup::"
-            total_scanned=$((total_scanned + $(echo "${response}" | jq -r '.scanned // 0')))
-            total_inserted=$((total_inserted + $(echo "${response}" | jq -r '.inserted // 0')))
-            total_updated=$((total_updated + $(echo "${response}" | jq -r '.updated // 0')))
-            total_unchanged=$((total_unchanged + $(echo "${response}" | jq -r '.unchanged // 0')))
-            total_failed=$((total_failed + $(echo "${response}" | jq -r '.failed // 0')))
-
-            done="$(echo "${response}" | jq -r '.done // false')"
-            if [[ "${done}" == "true" ]]; then
-              break
-            fi
-            sleep 1
-          done
-
-          if [[ "${done}" != "true" ]]; then
-            echo "Ingestion did not finish within 10,000 batches; the Worker checkpoint is saved for the next run." >&2
-            exit 1
-          fi
-
-          echo "Completed: scanned=${total_scanned}, inserted=${total_inserted}, updated=${total_updated}, unchanged=${total_unchanged}, failed=${total_failed}"
-          if (( total_failed > 0 )); then
-            echo "::warning::${total_failed} article attempt(s) failed; their details were saved in D1 for retry during later runs."
-          fi
+        run: bash .github/scripts/ingest.sh

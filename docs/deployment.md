@@ -82,14 +82,19 @@ Open GitHub Actions → **Refresh blog index** → **Run workflow** to trigger t
 
 - **Do not clear D1 or select `reset_backfill`** to resume a stopped import. Its checkpoint is persisted in D1.
 - D1 permits at most 100 bound parameters per SQL statement. Every chunk INSERT row has 8 bound values, so each INSERT is limited to 12 chunks; this is covered by CI tests.
-- To reduce resource pressure on free-tier Workers, the default is now 2 articles per request with concurrency set to 1. This takes more requests but is safer for initial backfills.
-- GitHub Actions serializes ingest workflow runs, and retries temporary HTTP 409 (active lock), 429, 500, 502, 503, 504, or transport errors with exponential-then-capped backoff. Persistent errors still fail the run with details.
+- The default is 1 article per request with concurrency set to 1. Due failed-article retries share this budget, rather than adding two more articles to an otherwise small request.
+- Blogger `/feeds/posts/default` URLs are automatically fetched through `/feeds/posts/summary?alt=json`, preserving pagination parameters and the saved offset. Full article text is still fetched from each article's HTML page. This avoids repeatedly parsing a large full-text Atom feed within the free Worker's CPU budget; no cursor reset is required.
+- GitHub Actions serializes ingest workflow runs. Active-lease HTTP 409 polls use a separate, bounded 20-minute waiting window and do not consume the 24-attempt upstream-error budget. Temporary 429/5xx responses and transport errors use capped backoff; `Retry-After` is honored up to 60 seconds per poll.
+- Every upstream failure logs its response excerpt and Cloudflare `CF-Ray`, including recognizable platform errors such as 1102. A later 409 no longer hides the original 503. Persistent upstream errors and excessively long lock waits still fail the run.
 - Individual article failures are stored in D1 `failed_articles` and are retried when due on later ingestion requests. Review the workflow's `failed` total and warning messages.
 - After every successful batch, GitHub Actions logs each processed article's **title**, **URL**, and status (`inserted`, `updated`, `unchanged`, or `failed`). Failed entries also include a short error.
-- When a 409 lock conflict occurs, the response includes `progress.current.articles` and a lock-expiry estimate. GitHub Actions prints that information to identify the blocked batch. This is the **last reported** work; after a Worker crash it may be stale, not proof that an article is still being processed.
+- When a 409 lock conflict occurs, GitHub Actions always prints the lock-expiry estimate, even if `progress.current` is null. When available, it also prints the last phase (`fetching_feed`, `indexing_articles`, or `retrying_article`) and article titles/URLs. This is the **last reported** work; after a Worker crash it may be stale.
 - The protected `GET /internal/ingest/status` endpoint exposes the same progress for authorized checks while a request is active. Send `Authorization: Bearer <INGEST_TOKEN>`; do not put the token in a public URL or public log. No extra D1 migration is needed.
-- An interrupted Worker may leave the D1 lease in place for up to 15 minutes. Keep `reset_backfill` disabled when restarting: the last committed cursor is retained.
-- Newly committed logging changes apply to **new Actions runs**, and the Worker changes apply after the updated Worker is deployed. An already running job does not hot-reload new workflow code.
+- Healthy requests renew their 120-second lease every 30 seconds. A terminated Worker normally blocks recovery for at most 2 minutes after its last renewal. A lease created by an older deployment may still need its original 15 minutes to expire once. A request that loses ownership cannot commit its checkpoint or clear its replacement's progress.
+- Cursor, mode, and backfill-completion updates are saved transactionally. An article failure must be persisted before the cursor advances; a failure to save the retry record fails the batch instead.
+- After updating, first run **Deploy Cloudflare Worker** on `main`, then start a **new** **Refresh blog index** run on `main` with `reset_backfill` disabled. Re-running a historical failed job uses its old revision. Existing indexed articles and the last committed cursor are retained; no D1 migration is needed for this change.
+
+If a fresh run still reports 1102, check Cloudflare Workers invocation logs for `exceededCpu` or `exceededMemory`; an HTTP 503 alone does not establish which resource failed. Free-plan CPU limits still apply to unusually large articles. The improved response logging distinguishes these platform failures from an active ingestion lease.
 
 ## Step 7: Verify the Website and ChatGPT MCP
 

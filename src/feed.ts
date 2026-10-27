@@ -9,6 +9,9 @@ const xmlParser = new XMLParser({
   removeNSPrefix: true,
   parseTagValue: false,
   trimValues: true,
+  // Article bodies are fetched separately. Avoid XML entity processing for
+  // unused full-text fields in non-Blogger feeds as well.
+  stopNodes: ["*.content", "*.summary", "*.description", "*.encoded"],
 });
 
 export interface FeedPage {
@@ -25,7 +28,7 @@ function textValue(value: unknown): string {
   if (typeof value === "string" || typeof value === "number") return String(value).trim();
   if (!value || typeof value !== "object") return "";
   const object = value as Record<string, unknown>;
-  return textValue(object["#text"] ?? object["#cdata"] ?? object.value ?? "");
+  return textValue(object["#text"] ?? object["#cdata"] ?? object.$t ?? object.value ?? "");
 }
 
 function parseLinks(value: unknown): Array<{ rel: string; href: string }> {
@@ -34,8 +37,8 @@ function parseLinks(value: unknown): Array<{ rel: string; href: string }> {
       if (typeof item === "string") return { rel: "alternate", href: item.trim() };
       const record = item as Record<string, unknown>;
       return {
-        rel: textValue(record["@_rel"]) || "alternate",
-        href: textValue(record["@_href"] ?? record["#text"]),
+        rel: textValue(record["@_rel"] ?? record.rel) || "alternate",
+        href: textValue(record["@_href"] ?? record.href ?? record["#text"]),
       };
     })
     .filter((link) => Boolean(link.href));
@@ -46,7 +49,7 @@ function parseTags(value: unknown): string[] {
     .map((item) => {
       if (typeof item === "string") return item.trim();
       const record = item as Record<string, unknown>;
-      return textValue(record["@_term"] ?? record["#text"] ?? record.name);
+      return textValue(record["@_term"] ?? record.term ?? record["#text"] ?? record.name);
     })
     .filter((tag) => tag.length > 0))].slice(0, 30);
 }
@@ -66,8 +69,8 @@ function parseEntry(raw: Record<string, unknown>, baseUrl: string): FeedEntry | 
     return null;
   }
 
-  const publishedAt = parseDate(raw.published ?? raw.pubDate ?? raw.date ?? raw["dc:date"]);
-  const updatedAt = parseDate(raw.updated ?? raw["lastBuildDate"] ?? raw.modified);
+  const publishedAt = parseDate(textValue(raw.published ?? raw.pubDate ?? raw.date ?? raw["dc:date"]));
+  const updatedAt = parseDate(textValue(raw.updated ?? raw["lastBuildDate"] ?? raw.modified));
   return {
     url,
     title: textValue(raw.title) || url,
@@ -78,17 +81,26 @@ function parseEntry(raw: Record<string, unknown>, baseUrl: string): FeedEntry | 
 }
 
 export async function fetchFeedPage(feedUrl: string, blogBaseUrl: string): Promise<FeedPage> {
-  const response = await fetchWithRetry(feedUrl, {
+  const requestUrl = new URL(feedUrl);
+  if (requestUrl.origin === new URL(blogBaseUrl).origin && /^\/feeds\/posts\/(default|summary)(\/|$)/.test(requestUrl.pathname)) {
+    // Blogger's full Atom feed can approach 2 MB for 100 posts. Parsing it on
+    // every one-article batch exceeds the Free Worker's CPU budget. Its summary
+    // JSON feed has the same ordering/pagination and keeps existing cursors valid.
+    requestUrl.pathname = requestUrl.pathname.replace("/feeds/posts/default", "/feeds/posts/summary");
+    requestUrl.searchParams.set("alt", "json");
+    requestUrl.searchParams.delete("callback");
+  }
+  const response = await fetchWithRetry(requestUrl, {
     headers: {
-      Accept: "application/atom+xml, application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
+      Accept: "application/json, application/atom+xml, application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
       "User-Agent": "PulipuliBlogKnowledgeBot/0.1 (+https://github.com/pulipulichen/pulipuli-blog-knowledge-mcp)",
     },
   });
   if (!response.ok) throw new Error(`Feed request returned HTTP ${response.status}`);
-  const xml = await response.text();
-  if (xml.length > 2_000_000) throw new Error("Feed response exceeded the 2 MB limit");
+  const body = await response.text();
+  if (body.length > 2_000_000) throw new Error("Feed response exceeded the 2 MB limit");
 
-  const parsed = xmlParser.parse(xml) as Record<string, unknown>;
+  const parsed = (/^\s*\{/.test(body) ? JSON.parse(body) : xmlParser.parse(body)) as Record<string, unknown>;
   const feed = (parsed.feed ?? parsed.rss ?? parsed.RDF ?? parsed) as Record<string, unknown>;
   const channel = (feed.channel ?? feed) as Record<string, unknown>;
   const rawEntries = feed.entry ?? channel.item ?? feed.item ?? [];

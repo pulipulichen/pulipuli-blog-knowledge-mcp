@@ -2,6 +2,7 @@ import { fetchArticleText, canonicalizeUrl } from "./article";
 import { maxRowsPerD1Insert } from "./d1-limits";
 import { getConfig, feedUrlWithPagination, nextStartIndexUrl } from "./config";
 import { fetchFeedPage } from "./feed";
+import { acquireIngestLease, type IngestLease } from "./ingest-lock";
 import { HttpError, normalizeText, sha256Hex, sleep, splitIntoChunks, stableUuid } from "./http";
 import { deletePoints, embedTexts, ensureCollection, makeVectorId, upsertPoints, type VectorPoint } from "./qdrant";
 import type { ArticleRow, Env, FeedCursor, FeedEntry, IngestArticleLog, IngestProgress, IngestResult } from "./types";
@@ -22,11 +23,15 @@ async function getState(env: Env, key: string): Promise<string | null> {
   return row?.value ?? null;
 }
 
-async function setState(env: Env, key: string, value: string): Promise<void> {
-  await env.DB.prepare(`
+function stateStatement(env: Env, key: string, value: string): D1PreparedStatement {
+  return env.DB.prepare(`
     INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).bind(key, value, new Date().toISOString()).run();
+  `).bind(key, value, new Date().toISOString());
+}
+
+async function setState(env: Env, key: string, value: string): Promise<void> {
+  await stateStatement(env, key, value).run();
 }
 
 /** Progress is advisory: Workers can terminate before the last heartbeat is cleared. */
@@ -43,11 +48,12 @@ export async function getIngestStatus(env: Env): Promise<IngestProgress> {
   let current: IngestProgress["current"] = null;
   if (locked && active?.value) {
     try {
-      const parsed = JSON.parse(active.value) as IngestProgress["current"];
-      if (parsed && typeof parsed.startedAt === "string" && Array.isArray(parsed.articles)) {
+      const parsed = JSON.parse(active.value) as (NonNullable<IngestProgress["current"]> & { token?: string }) | null;
+      if (parsed && (!parsed.token || parsed.token === lock?.token) && typeof parsed.startedAt === "string" && Array.isArray(parsed.articles)) {
         current = {
           startedAt: parsed.startedAt,
           articles: parsed.articles.filter((item) => typeof item?.title === "string" && typeof item?.url === "string"),
+          ...(typeof parsed.phase === "string" ? { phase: parsed.phase } : {}),
         };
       }
     } catch {
@@ -61,26 +67,6 @@ export async function getIngestStatus(env: Env): Promise<IngestProgress> {
     remainingLockSeconds,
     current,
   };
-}
-
-async function acquireLock(env: Env): Promise<string> {
-  const token = crypto.randomUUID();
-  const now = Math.floor(Date.now() / 1_000);
-  await env.DB.prepare("INSERT OR IGNORE INTO sync_lock (id, token, expires_at) VALUES (1, NULL, 0)").run();
-  const result = await env.DB.prepare(`
-    UPDATE sync_lock SET token = ?, expires_at = ?
-    WHERE id = 1 AND expires_at < ?
-  `).bind(token, now + 900, now).run();
-  if ((result.meta?.changes ?? 0) === 0) {
-    throw new HttpError(409, "An ingestion run is already active", "ingestion_already_running");
-  }
-  return token;
-}
-
-async function releaseLock(env: Env, token: string): Promise<void> {
-  await env.DB.prepare("UPDATE sync_lock SET token = NULL, expires_at = 0 WHERE id = 1 AND token = ?")
-    .bind(token)
-    .run();
 }
 
 async function saveFailure(env: Env, entry: FeedEntry, error: unknown): Promise<void> {
@@ -143,7 +129,7 @@ async function embedChunks(env: Env, articleId: string, contentHash: string, chu
   return points;
 }
 
-async function indexEntry(env: Env, entry: FeedEntry): Promise<"inserted" | "updated" | "unchanged"> {
+async function indexEntry(env: Env, entry: FeedEntry, lease: IngestLease): Promise<"inserted" | "updated" | "unchanged"> {
   const config = getConfig(env);
   const canonicalUrl = canonicalizeUrl(entry.url, config.blogBaseUrl);
   const canonicalOrigin = new URL(canonicalUrl).origin;
@@ -167,6 +153,7 @@ async function indexEntry(env: Env, entry: FeedEntry): Promise<"inserted" | "upd
       .first<{ embedding_model: string }>()
     : null;
   if (existing?.content_hash === contentHash && indexedModel?.embedding_model === config.embeddingModel) {
+    await lease.assertOwned();
     await env.DB.prepare("UPDATE articles SET fetched_at = ?, updated_at = COALESCE(?, updated_at) WHERE id = ?")
       .bind(fetchedAt, entry.updatedAt, existing.id)
       .run();
@@ -176,6 +163,7 @@ async function indexEntry(env: Env, entry: FeedEntry): Promise<"inserted" | "upd
 
   const chunks = splitIntoChunks(fullText, config.chunkSizeChars, config.chunkOverlapChars);
   if (chunks.length === 0) throw new Error("Article has no indexable text");
+  await lease.assertOwned();
   const points = await embedChunks(env, articleId, contentHash, chunks);
   const oldChunkRows = existing
     ? await env.DB.prepare("SELECT vector_id FROM chunks WHERE article_id = ?").bind(articleId).all<{ vector_id: string }>()
@@ -189,9 +177,11 @@ async function indexEntry(env: Env, entry: FeedEntry): Promise<"inserted" | "upd
     vectorId: points[ordinal]!.id,
   })));
 
+  await lease.assertOwned();
   try {
     await upsertPoints(env, points);
   } catch (error) {
+    await lease.assertOwned();
     await deletePoints(env, points.map((point) => point.id)).catch(() => undefined);
     throw error;
   }
@@ -244,13 +234,18 @@ async function indexEntry(env: Env, entry: FeedEntry): Promise<"inserted" | "upd
     ...chunkStatements,
   ];
 
+  // Renew immediately before committing article data, so a request that lost
+  // ownership while waiting for AI/Qdrant cannot overwrite its replacement.
+  await lease.assertOwned();
   try {
     await env.DB.batch(statements);
   } catch (error) {
+    await lease.assertOwned();
     await deletePoints(env, points.map((point) => point.id)).catch(() => undefined);
     throw error;
   }
 
+  await lease.assertOwned();
   await deletePoints(env, oldVectorIds).catch(() => undefined);
   await clearFailure(env, canonicalUrl);
   return existing ? "updated" : "inserted";
@@ -293,18 +288,20 @@ async function recordRun(
   ).run();
 }
 
-async function processEntrySafely(env: Env, entry: FeedEntry, counters: IngestCounters): Promise<void> {
+async function processEntrySafely(env: Env, entry: FeedEntry, counters: IngestCounters, lease: IngestLease): Promise<void> {
   const article = { title: entry.title, url: entry.url };
   try {
-    const status = await indexEntry(env, entry);
+    const status = await indexEntry(env, entry, lease);
     counters[status] += 1;
     counters.articles.push({ ...article, status });
   } catch (error) {
+    // A lost lease is a batch failure, not a failed article to checkpoint past.
+    await lease.assertOwned();
     counters.failed += 1;
     const message = error instanceof Error ? error.message : "Unknown ingestion error";
     if (counters.errors.length < 5) counters.errors.push(`${entry.title.slice(0, 80)}: ${message.slice(0, 160)}`);
     counters.articles.push({ ...article, status: "failed", error: message.slice(0, 200) });
-    await saveFailure(env, entry, error).catch(() => undefined);
+    await saveFailure(env, entry, error);
   }
 }
 
@@ -313,18 +310,23 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
     throw new HttpError(500, "BLOG_FEED_URL and BLOG_BASE_URL must be configured", "missing_blog_config");
   }
 
-  const lockToken = await acquireLock(env);
   const config = getConfig(env);
+  const lease = await acquireIngestLease(env);
   const runId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
   const counters: IngestCounters = { scanned: 0, inserted: 0, updated: 0, unchanged: 0, failed: 0, retrying: 0, errors: [], articles: [] };
   let mode: "backfill" | "incremental" = "backfill";
 
   try {
+    await setState(env, "ingest_active_articles", JSON.stringify({
+      token: lease.token, startedAt, phase: "fetching_feed", articles: [],
+    }));
     if (options.reset) {
-      await setState(env, "backfill_complete", "0");
-      await setState(env, "ingest_cursor", "");
-      await setState(env, "ingest_mode", "");
+      await env.DB.batch([
+        stateStatement(env, "backfill_complete", "0"),
+        stateStatement(env, "ingest_cursor", ""),
+        stateStatement(env, "ingest_mode", ""),
+      ]);
     }
 
     const backfillComplete = (await getState(env, "backfill_complete")) === "1";
@@ -343,36 +345,47 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
     `).bind(runId, startedAt, mode).run();
 
     const page = await fetchFeedPage(cursor.url, config.blogBaseUrl);
+    await lease.assertOwned();
     const start = Math.min(cursor.offset, page.entries.length);
-    const batch = page.entries.slice(start, start + config.maxArticlesPerRequest);
+    const dueFailures = await env.DB.prepare(`
+      SELECT entry_json FROM failed_articles WHERE next_retry_at <= ? ORDER BY next_retry_at LIMIT ?
+    `).bind(Math.floor(Date.now() / 1_000), config.maxArticlesPerRequest).all<{ entry_json: string }>();
+    const retries: FeedEntry[] = [];
+    for (const row of dueFailures.results ?? []) {
+      try {
+        const entry = JSON.parse(row.entry_json) as FeedEntry;
+        if (typeof entry?.url === "string" && typeof entry.title === "string" && Array.isArray(entry.tags)) retries.push(entry);
+      } catch {
+        // Invalid records must not consume the entire per-request article budget.
+      }
+    }
+    // Retries share the article budget. Previously two hidden retries could
+    // triple a one-article request's CPU, embedding, and subrequest load.
+    const batch = page.entries.slice(start, start + config.maxArticlesPerRequest - retries.length);
     for (let offset = 0; offset < batch.length; offset += config.concurrency) {
       const group = batch.slice(offset, offset + config.concurrency);
+      await lease.assertOwned();
       counters.scanned += group.length;
       await setState(env, "ingest_active_articles", JSON.stringify({
+        token: lease.token, phase: "indexing_articles",
         startedAt: new Date().toISOString(),
         articles: group.map(({ title, url }) => ({ title, url })),
       }));
-      await Promise.all(group.map((entry) => processEntrySafely(env, entry, counters)));
+      await Promise.all(group.map((entry) => processEntrySafely(env, entry, counters, lease)));
       if (config.requestDelayMs > 0 && offset + group.length < batch.length) {
         await sleep(config.requestDelayMs);
       }
     }
 
-    const dueFailures = await env.DB.prepare(`
-      SELECT entry_json FROM failed_articles WHERE next_retry_at <= ? ORDER BY next_retry_at LIMIT 2
-    `).bind(Math.floor(Date.now() / 1_000)).all<{ entry_json: string }>();
-    for (const row of dueFailures.results ?? []) {
-      try {
-        const entry = JSON.parse(row.entry_json) as FeedEntry;
-        counters.retrying += 1;
-        await setState(env, "ingest_active_articles", JSON.stringify({
-          startedAt: new Date().toISOString(),
-          articles: [{ title: entry.title, url: entry.url }],
-        }));
-        await processEntrySafely(env, entry, counters);
-      } catch {
-        // Malformed failure records remain visible for manual cleanup.
-      }
+    for (const entry of retries) {
+      await lease.assertOwned();
+      counters.retrying += 1;
+      await setState(env, "ingest_active_articles", JSON.stringify({
+        token: lease.token, phase: "retrying_article",
+        startedAt: new Date().toISOString(),
+        articles: [{ title: entry.title, url: entry.url }],
+      }));
+      await processEntrySafely(env, entry, counters, lease);
     }
 
     const reachedPageEnd = start + batch.length >= page.entries.length;
@@ -388,14 +401,14 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
     }
 
     const done = nextCursor === null;
-    if (done) {
-      await setState(env, "ingest_cursor", "");
-      await setState(env, "ingest_mode", "");
-      if (mode === "backfill") await setState(env, "backfill_complete", "1");
-    } else {
-      await setState(env, "ingest_cursor", JSON.stringify(nextCursor));
-      await setState(env, "ingest_mode", mode);
-    }
+    await lease.assertOwned();
+    // D1 batch is transactional: a terminated request cannot save a cleared
+    // cursor while leaving backfill_complete or ingest_mode at the old value.
+    await env.DB.batch([
+      stateStatement(env, "ingest_cursor", done ? "" : JSON.stringify(nextCursor)),
+      stateStatement(env, "ingest_mode", done ? "" : mode),
+      ...(done && mode === "backfill" ? [stateStatement(env, "backfill_complete", "1")] : []),
+    ]);
 
     await recordRun(env, runId, mode, counters, counters.failed > 0 ? "partial" : "succeeded");
     return { ...counters, done, mode };
@@ -404,7 +417,6 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
     await recordRun(env, runId, mode, counters, "failed", summary.slice(0, 500)).catch(() => undefined);
     throw error;
   } finally {
-    await setState(env, "ingest_active_articles", "").catch(() => undefined);
-    await releaseLock(env, lockToken).catch(() => undefined);
+    await lease.release().catch(() => undefined);
   }
 }

@@ -12,7 +12,7 @@ export function getConfig(env: Env) {
     feedUrl: env.BLOG_FEED_URL || "https://blog.pulipuli.info/feeds/posts/default",
     blogBaseUrl: env.BLOG_BASE_URL || "https://blog.pulipuli.info/",
     embeddingModel: env.EMBEDDING_MODEL || "@cf/baai/bge-m3",
-    maxArticlesPerRequest: boundedInteger(env.MAX_ARTICLES_PER_REQUEST, 2, 1, 25),
+    maxArticlesPerRequest: boundedInteger(env.MAX_ARTICLES_PER_REQUEST, 1, 1, 25),
     feedPageSize: boundedInteger(env.FEED_PAGE_SIZE, 100, 10, 100),
     concurrency: boundedInteger(env.INGEST_CONCURRENCY, 1, 1, 4),
     requestDelayMs: boundedInteger(env.REQUEST_DELAY_MS, 1_000, 0, 5_000),

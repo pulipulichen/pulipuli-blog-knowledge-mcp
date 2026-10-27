@@ -13,6 +13,33 @@ function mockFeed(xml: string, status = 200): void {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Blogger and RSS feed ingestion", () => {
+  it("uses Blogger summary JSON while preserving a saved page's ordering and size", async () => {
+    const savedUrl = baseUrl + "feeds/posts/default?start-index=101&max-results=100&orderby=updated";
+    mockFeed(JSON.stringify({ feed: {
+      link: [{ rel: "next", href: baseUrl + "feeds/posts/summary?alt=json&start-index=201&max-results=100" }],
+      entry: [{
+        title: { $t: "A small metadata feed" },
+        published: { $t: "2026-10-26T07:30:00Z" },
+        updated: { $t: "2026-10-26T08:30:00Z" },
+        link: [{ rel: "self", href: baseUrl + "feeds/posts/default/123" }, { rel: "alternate", href: baseUrl + "post.html" }],
+        category: [{ term: "MCP" }, { term: "MCP" }],
+      }],
+    } }));
+    const page = await fetchFeedPage(savedUrl, baseUrl);
+    const request = new URL(String(vi.mocked(fetch).mock.calls[0][0]));
+    expect(request.pathname).toBe("/feeds/posts/summary");
+    expect(Object.fromEntries(request.searchParams)).toEqual({ "start-index": "101", "max-results": "100", orderby: "updated", alt: "json" });
+    expect(page.entries).toEqual([{ title: "A small metadata feed", url: baseUrl + "post.html", publishedAt: "2026-10-26T07:30:00.000Z", updatedAt: "2026-10-26T08:30:00.000Z", tags: ["MCP"] }]);
+    expect(page.nextUrl).toContain("start-index=201");
+  });
+
+  it("does not rewrite generic RSS feed URLs", async () => {
+    mockFeed('<rss><channel><item><title>Post</title><link>https://blog.pulipuli.info/post.html</link></item></channel></rss>');
+    const url = "https://example.test/feed.xml?category=test";
+    await fetchFeedPage(url, baseUrl);
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(url);
+  });
+
   it("parses Atom entries, dates, unique tags, and same-origin pagination", async () => {
     mockFeed([
       '<?xml version="1.0" encoding="UTF-8"?>',

@@ -4,7 +4,7 @@ A public, read-only knowledge base for articles from [Pulipuli Blog](https://blo
 
 ## Features
 
-- Read the Blogger Atom feed and backfill historical posts in batches using a pagination cursor.
+- Read Blogger's lightweight summary JSON feed and backfill historical posts using a pagination cursor; generic Atom and RSS feeds are also supported.
 - Fetch actual article pages and extract their full text instead of treating RSS excerpts as full content.
 - Respect `robots.txt` and support retries, rate limiting, and retrying failed articles.
 - Store titles, URLs, dates, tags, full text, and content hashes in D1; refresh the vector index when content changes.
