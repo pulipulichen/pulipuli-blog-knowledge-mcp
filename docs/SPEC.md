@@ -12,7 +12,7 @@ This deployment indexes only Pulipuli Blog. The source adapter remains reusable,
 4. Using the canonical URL as the unique key, the runner upserts each article's title, URL, dates, tags, full text, and content hash into D1. The same ingestion engine and lease/checkpoint SQL are shared with the Worker.
 5. When an article changes, the runner splits it into chunks and calls the authenticated Worker embedding proxy once per chunk. Workers AI `@cf/baai/bge-m3` generates each vector; the runner writes vectors to Qdrant Cloud. Large HTML parsing, vector JSON serialization, and full-article chunking no longer consume one Worker's CPU allowance. The Qdrant collection is created on the first write using the actual vector size.
 6. The public search endpoint retrieves candidates through D1 substring matching and Qdrant semantic search. Hybrid mode combines rankings with Reciprocal Rank Fusion (RRF).
-7. `/mcp` exposes the read-only `search_articles` and `get_article` tools over Streamable HTTP.
+7. `/mcp` exposes read-only `search_articles`, `list_recent_articles`, and `get_article` tools over Streamable HTTP. Recent listing reads D1 only.
 
 ## Database Tables
 
@@ -28,6 +28,7 @@ Migrations are stored in `migrations/`. Article IDs are derived from canonical U
 ## HTTP Interface
 
 - `GET /api/search?q=...&limit=...&mode=hybrid|keyword|semantic`
+- `GET /api/recent?n=5` (default 5, range 1–50, ordered newest first)
 - `GET /api/articles/:id`
 - `GET /health`
 - `POST /internal/ingest` (Bearer Token; supports `{"reset": true}` to restart the historical backfill)
@@ -35,6 +36,8 @@ Migrations are stored in `migrations/`. Article IDs are derived from canonical U
 - `GET /internal/ingest/embedding` (Bearer Token; model check)
 - `POST /internal/ingest/embedding` (Bearer Token; one `text` string, at most 3,000 Unicode characters and a 16 KiB JSON body)
 - `/mcp` (Streamable HTTP; read-only tools)
+
+Recent listings include ID, title, URL, published date, tags, and excerpt, with no relevance score or embedding cost. Sort by publication time, using updated/fetched time for missing publication dates and article ID for stable ties. The partial index `idx_articles_recent_published` accelerates the listing.
 
 Search results include article ID, title, URL, date, tags, excerpt, and score. Only `get_article` and the article API return full text. Public endpoints limit input length, result counts, and request rates per Worker isolate. For production deployments with high traffic, configure WAF Rate Limiting in your Cloudflare zone as well.
 

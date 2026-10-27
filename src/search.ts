@@ -19,7 +19,9 @@ function tagsFromJson(value: string): string[] {
   }
 }
 
-function toSummary(row: ArticleRow, score?: number): ArticleSummary {
+type SummaryRow = Pick<ArticleRow, "id" | "title" | "canonical_url" | "published_at" | "tags_json" | "full_text">;
+
+function toSummary(row: SummaryRow, score?: number): ArticleSummary {
   return {
     id: row.id,
     title: row.title,
@@ -128,6 +130,27 @@ export async function searchArticles(
     .map((id) => toSummary(rows.get(id)!, scores.get(id)));
 
   return { query, mode, results, count: results.length };
+}
+
+/** Lists newest indexed published posts directly from D1 (no embedding or vector search). */
+export async function listRecentArticles(
+  env: Env,
+  n = 5,
+): Promise<{ results: ArticleSummary[]; count: number; n: number }> {
+  if (!Number.isInteger(n) || n < 1 || n > 50) {
+    throw new SearchError(400, "n must be an integer between 1 and 50", "invalid_limit");
+  }
+  const query = `
+    SELECT id, title, canonical_url, published_at, tags_json,
+           substr(full_text, 1, 500) AS full_text
+    FROM articles
+    WHERE status = 'published'
+    ORDER BY COALESCE(published_at, updated_at, fetched_at) DESC, id DESC
+    LIMIT ?
+  `;
+  const result = await env.DB.prepare(query).bind(n).all<SummaryRow>();
+  const results = (result.results ?? []).map((row) => toSummary(row));
+  return { results, count: results.length, n };
 }
 
 export async function getArticle(env: Env, idOrUrl: string): Promise<ArticleRow | null> {

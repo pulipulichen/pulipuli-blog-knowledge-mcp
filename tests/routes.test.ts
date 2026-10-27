@@ -30,6 +30,7 @@ describe("public Worker routes (without Cloudflare credentials)", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(await response.text()).toContain('id="recent-button"');
   });
 
   it("reports D1 health", async () => {
@@ -54,6 +55,25 @@ describe("public Worker routes (without Cloudflare credentials)", () => {
     ), mockEnv());
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ count: 0, mode: "keyword" });
+  });
+
+  it("lists recent posts with a default of five", async () => {
+    const response = await worker.fetch(new Request("https://worker.example.test/api/recent"), mockEnv());
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ results: [], count: 0, n: 5 });
+  });
+
+  it("rejects invalid recent counts", async () => {
+    for (const n of ["0", "51", "-2", "1.5", "wat", ""]) {
+      const response = await worker.fetch(new Request("https://worker.example.test/api/recent?n=" + n), mockEnv());
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_limit" } });
+    }
+  });
+
+  it("rejects non-GET recent requests", async () => {
+    const response = await worker.fetch(new Request("https://worker.example.test/api/recent", { method: "POST" }), mockEnv());
+    expect(response.status).toBe(405);
   });
 
   it("does not permit ingestion with a missing or invalid bearer token", async () => {

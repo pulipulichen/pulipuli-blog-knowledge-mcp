@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
-import { articleToApi, getArticle, searchArticles } from "./search";
+import { articleToApi, getArticle, listRecentArticles, searchArticles } from "./search";
 import { withCors } from "./http";
 import type { Env, SearchMode } from "./types";
 
@@ -27,6 +27,23 @@ export async function handleMcpRequest(request: Request, env: Env): Promise<Resp
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Search failed";
+        return { isError: true, content: [{ type: "text", text: message }] };
+      }
+    },
+  );
+
+  server.registerTool(
+    "list_recent_articles",
+    {
+      description: "List the N most recently published indexed Pulipuli Blog articles (default 5), newest first, without a search query or embedding request. Returns titles, URLs, publication dates, tags, and excerpts.",
+      inputSchema: { n: z.number().int().min(1).max(50).optional() },
+    },
+    async ({ n }) => {
+      try {
+        const result = await listRecentArticles(env, n);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Recent articles lookup failed";
         return { isError: true, content: [{ type: "text", text: message }] };
       }
     },

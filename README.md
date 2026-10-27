@@ -9,7 +9,8 @@ A public, read-only knowledge base for articles from [Pulipuli Blog](https://blo
 - Respect `robots.txt` and support retries, rate limiting, and retrying failed articles.
 - Store titles, URLs, dates, tags, full text, and content hashes in D1; refresh the vector index when content changes.
 - Support keyword, semantic, and hybrid search. Hybrid ranking uses Reciprocal Rank Fusion (RRF).
-- Expose read-only `search_articles` and `get_article` tools at `/mcp` for MCP clients supporting Streamable HTTP.
+- Expose read-only `search_articles`, `list_recent_articles`, and `get_article` tools at `/mcp` for MCP clients supporting Streamable HTTP.
+- List the latest indexed articles with one click on the search site, or call `list_recent_articles(n=5)` without embeddings.
 - Run synchronization every two days on GitHub Actions; resume the initial backfill from D1 checkpoints.
 - Parse article HTML, split text, and write vectors on the cloud runner. Each Worker embedding request handles one small text, avoiding Free Worker CPU limits for full articles.
 
@@ -44,13 +45,14 @@ For detailed instructions and Secret permissions, see the [Cloud-Only Deployment
 
 - `GET /`: Blog search page.
 - `GET /api/search?q=...&limit=...&mode=hybrid|keyword|semantic`: Search articles.
+- `GET /api/recent?n=5`: List newest indexed published posts (default 5; 1–50) with title, URL, date, tags, and excerpt.
 - `GET /api/articles/:id`: Retrieve the fully indexed text of an article.
 - `GET /health`: Worker and D1 health status.
 - `POST /internal/ingest`: Bearer-token-protected batch synchronization endpoint; results include each article's title, URL, and outcome.
 - `GET /internal/ingest/status`: Bearer-token-protected status endpoint showing the last reported in-progress articles and D1 lease expiry.
 - `GET /internal/ingest/embedding`: Bearer-token-protected model/configuration check for the Actions runner.
 - `POST /internal/ingest/embedding`: Bearer-token-protected single-text embedding proxy (maximum 3,000 characters).
-- `/mcp`: Read-only MCP Streamable HTTP endpoint.
+- `/mcp`: Read-only MCP Streamable HTTP endpoint. Call `list_recent_articles` with no arguments for five posts, or `{"n":10}` for ten.
 
 ## Configuration and Secrets
 

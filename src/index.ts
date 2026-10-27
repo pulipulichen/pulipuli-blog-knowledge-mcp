@@ -1,7 +1,7 @@
 import { getIngestStatus, runIngest } from "./ingest";
 import { bearerToken, constantTimeEqual, errorResponse, HttpError, isRateLimited, jsonResponse, optionsResponse, readJsonBody, withCors } from "./http";
 import { handleMcpRequest } from "./mcp";
-import { articleToApi, getArticle, SearchError, searchArticles } from "./search";
+import { articleToApi, getArticle, listRecentArticles, SearchError, searchArticles } from "./search";
 import { INDEX_HTML } from "./web";
 import { getConfig } from "./config";
 import { embedTexts } from "./qdrant";
@@ -72,6 +72,21 @@ async function route(request: Request, env: Env): Promise<Response> {
     } catch (error) {
       if (error instanceof SearchError) return errorResponse(error.message, error.status, error.code);
       return errorResponse("Search service is temporarily unavailable", 503, "search_unavailable");
+    }
+  }
+
+  if (path === "/api/recent") {
+    if (request.method !== "GET") return methodNotAllowed("GET, OPTIONS");
+    if (isRateLimited(request)) return withCors(rateLimitResponse());
+    const rawN = url.searchParams.get("n");
+    const n = rawN === null ? 5 : Number(rawN);
+    if (!Number.isInteger(n) || n < 1 || n > 50) {
+      return errorResponse("n must be an integer between 1 and 50", 400, "invalid_limit");
+    }
+    try {
+      return jsonResponse(await listRecentArticles(env, n));
+    } catch {
+      return errorResponse("Recent articles are temporarily unavailable", 503, "recent_unavailable");
     }
   }
 
