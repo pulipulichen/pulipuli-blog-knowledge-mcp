@@ -129,7 +129,9 @@ async function embedChunks(env: Env, articleId: string, contentHash: string, chu
   return points;
 }
 
-async function indexEntry(env: Env, entry: FeedEntry, lease: IngestLease): Promise<"inserted" | "updated" | "unchanged"> {
+type ArticleReader = (url: string, entry: FeedEntry, env: Env) => Promise<string>;
+
+async function indexEntry(env: Env, entry: FeedEntry, lease: IngestLease, readArticle: ArticleReader): Promise<"inserted" | "updated" | "unchanged"> {
   const config = getConfig(env);
   const canonicalUrl = canonicalizeUrl(entry.url, config.blogBaseUrl);
   const canonicalOrigin = new URL(canonicalUrl).origin;
@@ -138,7 +140,7 @@ async function indexEntry(env: Env, entry: FeedEntry, lease: IngestLease): Promi
   }
 
   const articleId = await stableUuid(`article:${canonicalUrl}`);
-  const fullText = normalizeText(await fetchArticleText(canonicalUrl, entry, env)).slice(0, config.maxFullTextChars);
+  const fullText = normalizeText(await readArticle(canonicalUrl, entry, env)).slice(0, config.maxFullTextChars);
   const title = normalizeText(entry.title).slice(0, 500) || canonicalUrl;
   const tagsJson = JSON.stringify([...new Set(entry.tags.map((tag) => normalizeText(tag)).filter(Boolean))].slice(0, 30));
   const contentHash = await sha256Hex(`${title}\n${entry.publishedAt ?? ""}\n${tagsJson}\n${fullText}`);
@@ -288,10 +290,10 @@ async function recordRun(
   ).run();
 }
 
-async function processEntrySafely(env: Env, entry: FeedEntry, counters: IngestCounters, lease: IngestLease): Promise<void> {
+async function processEntrySafely(env: Env, entry: FeedEntry, counters: IngestCounters, lease: IngestLease, readArticle: ArticleReader): Promise<void> {
   const article = { title: entry.title, url: entry.url };
   try {
-    const status = await indexEntry(env, entry, lease);
+    const status = await indexEntry(env, entry, lease, readArticle);
     counters[status] += 1;
     counters.articles.push({ ...article, status });
   } catch (error) {
@@ -305,12 +307,13 @@ async function processEntrySafely(env: Env, entry: FeedEntry, counters: IngestCo
   }
 }
 
-export async function runIngest(env: Env, options: { reset?: boolean } = {}): Promise<IngestResult> {
+export async function runIngest(env: Env, options: { reset?: boolean; readArticle?: ArticleReader } = {}): Promise<IngestResult> {
   if (!env.BLOG_FEED_URL || !env.BLOG_BASE_URL) {
     throw new HttpError(500, "BLOG_FEED_URL and BLOG_BASE_URL must be configured", "missing_blog_config");
   }
 
   const config = getConfig(env);
+  const readArticle = options.readArticle ?? fetchArticleText;
   const lease = await acquireIngestLease(env);
   const runId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
@@ -371,7 +374,7 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
         startedAt: new Date().toISOString(),
         articles: group.map(({ title, url }) => ({ title, url })),
       }));
-      await Promise.all(group.map((entry) => processEntrySafely(env, entry, counters, lease)));
+      await Promise.all(group.map((entry) => processEntrySafely(env, entry, counters, lease, readArticle)));
       if (config.requestDelayMs > 0 && offset + group.length < batch.length) {
         await sleep(config.requestDelayMs);
       }
@@ -385,7 +388,7 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
         startedAt: new Date().toISOString(),
         articles: [{ title: entry.title, url: entry.url }],
       }));
-      await processEntrySafely(env, entry, counters, lease);
+      await processEntrySafely(env, entry, counters, lease, readArticle);
     }
 
     const reachedPageEnd = start + batch.length >= page.entries.length;
@@ -420,3 +423,4 @@ export async function runIngest(env: Env, options: { reset?: boolean } = {}): Pr
     await lease.release().catch(() => undefined);
   }
 }
+

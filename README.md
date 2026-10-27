@@ -10,7 +10,8 @@ A public, read-only knowledge base for articles from [Pulipuli Blog](https://blo
 - Store titles, URLs, dates, tags, full text, and content hashes in D1; refresh the vector index when content changes.
 - Support keyword, semantic, and hybrid search. Hybrid ranking uses Reciprocal Rank Fusion (RRF).
 - Expose read-only `search_articles` and `get_article` tools at `/mcp` for MCP clients supporting Streamable HTTP.
-- Trigger synchronization every two days with GitHub Actions; resume the initial backfill across multiple Worker requests.
+- Run synchronization every two days on GitHub Actions; resume the initial backfill from D1 checkpoints.
+- Parse article HTML, split text, and write vectors on the cloud runner. Each Worker embedding request handles one small text, avoiding Free Worker CPU limits for full articles.
 
 ## Tests and CI
 
@@ -47,6 +48,8 @@ For detailed instructions and Secret permissions, see the [Cloud-Only Deployment
 - `GET /health`: Worker and D1 health status.
 - `POST /internal/ingest`: Bearer-token-protected batch synchronization endpoint; results include each article's title, URL, and outcome.
 - `GET /internal/ingest/status`: Bearer-token-protected status endpoint showing the last reported in-progress articles and D1 lease expiry.
+- `GET /internal/ingest/embedding`: Bearer-token-protected model/configuration check for the Actions runner.
+- `POST /internal/ingest/embedding`: Bearer-token-protected single-text embedding proxy (maximum 3,000 characters).
 - `/mcp`: Read-only MCP Streamable HTTP endpoint.
 
 ## Configuration and Secrets
@@ -66,3 +69,6 @@ For detailed instructions and Secret permissions, see the [Cloud-Only Deployment
 ## Limitations
 
 Free-tier quotas and limits for Cloudflare, Workers AI, D1, GitHub Actions, and Qdrant may change; verify current limits with each provider. Keyword search currently uses D1 substring matching, which is a practical starting point for Chinese-language queries against this blog. The indexing strategy can be revisited as the dataset grows.
+
+Use **Refresh blog index** for production backfills. The older direct `POST /internal/ingest` path still runs a whole article inside the Worker and can exceed its CPU budget. Deploy the latest Worker before starting a new refresh run; existing articles and cursors do not need to be reset.
+

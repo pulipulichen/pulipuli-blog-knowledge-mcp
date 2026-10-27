@@ -3,6 +3,8 @@ import { bearerToken, constantTimeEqual, errorResponse, HttpError, isRateLimited
 import { handleMcpRequest } from "./mcp";
 import { articleToApi, getArticle, SearchError, searchArticles } from "./search";
 import { INDEX_HTML } from "./web";
+import { getConfig } from "./config";
+import { embedTexts } from "./qdrant";
 import type { Env, SearchMode } from "./types";
 
 function methodNotAllowed(allow: string): Response {
@@ -88,6 +90,23 @@ async function route(request: Request, env: Env): Promise<Response> {
     return jsonResponse(articleToApi(article));
   }
 
+  if (path === "/internal/ingest/embedding") {
+    if (!["GET", "POST"].includes(request.method)) return methodNotAllowed("GET, POST, OPTIONS");
+    const supplied = bearerToken(request);
+    if (!env.INGEST_TOKEN || !supplied || !constantTimeEqual(supplied, env.INGEST_TOKEN)) {
+      return errorResponse("Valid bearer token required", 401, "unauthorized");
+    }
+    const model = getConfig(env).embeddingModel;
+    if (request.method === "GET") return jsonResponse({ model, maxTextChars: 3000 });
+    const body = await readJsonBody(request, 16_384) as { text?: unknown } | null;
+    if (typeof body?.text !== "string" || !body.text.trim() || Array.from(body.text).length > 3000) {
+      return errorResponse("text must contain 1 to 3000 characters", 400, "invalid_embedding_text");
+    }
+    // A single small vector per invocation keeps JSON/AI processing within the
+    // Free Worker's CPU budget. HTML, chunking, and Qdrant writes run in Actions.
+    return jsonResponse({ model, data: await embedTexts(env, [body.text]) });
+  }
+
   if (path === "/internal/ingest/status") {
     if (request.method !== "GET") return methodNotAllowed("GET, OPTIONS");
     const supplied = bearerToken(request);
@@ -131,8 +150,10 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       return withCors(await route(request, env));
-    } catch {
+    } catch (error) {
+      if (error instanceof HttpError) return withCors(errorResponse(error.message, error.status, error.code));
       return withCors(errorResponse("Unexpected server error", 500, "internal_error"));
     }
   },
 };
+

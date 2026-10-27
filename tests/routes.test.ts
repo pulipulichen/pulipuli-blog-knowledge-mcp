@@ -104,6 +104,29 @@ describe("public Worker routes (without Cloudflare credentials)", () => {
     });
   });
 
+  it("protects the runner embedding service and limits each call to one small text", async () => {
+    const env = mockEnv();
+    const endpoint = "https://worker.example.test/internal/ingest/embedding";
+    expect((await worker.fetch(new Request(endpoint), env)).status).toBe(401);
+    const headers = { authorization: "Bearer unit-test-token" };
+    const info = await worker.fetch(new Request(endpoint, { headers }), env);
+    await expect(info.json()).resolves.toMatchObject({ model: "@cf/baai/bge-m3", maxTextChars: 3000 });
+    for (const body of [{ text: ["one", "two"] }, { text: "x".repeat(3001) }, {}, null]) {
+      const response = await worker.fetch(new Request(endpoint, { method: "POST", headers, body: JSON.stringify(body) }), env);
+      expect(response.status).toBe(400);
+    }
+    expect(env.AI.run).not.toHaveBeenCalled();
+    vi.mocked(env.AI.run).mockResolvedValue({ data: [[0.1, 0.2]] });
+    const response = await worker.fetch(new Request(endpoint, { method: "POST", headers, body: JSON.stringify({ text: "中文文章 😀" }) }), env);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ model: "@cf/baai/bge-m3", data: [[0.1, 0.2]] });
+    expect(env.AI.run).toHaveBeenCalledWith("@cf/baai/bge-m3", { text: ["中文文章 😀"], truncate_inputs: true });
+    const invalid = await worker.fetch(new Request(endpoint, { method: "POST", headers, body: "{" }), env);
+    expect(invalid.status).toBe(400);
+    const oversized = await worker.fetch(new Request(endpoint, { method: "POST", headers, body: JSON.stringify({ text: "x".repeat(17_000) }) }), env);
+    expect(oversized.status).toBe(413);
+  });
+
   it("returns Retry-After on an ingestion lock conflict", async () => {
     const env = mockEnv();
     env.DB = {
@@ -148,3 +171,4 @@ describe("public Worker routes (without Cloudflare credentials)", () => {
     });
   });
 });
+

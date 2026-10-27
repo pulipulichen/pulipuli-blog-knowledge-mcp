@@ -12,6 +12,8 @@
     }
   },
   "ingestion": {
+    "executor": "github-actions-node-runner",
+    "embedding_transport": "worker-single-text-proxy",
     "interval_days": 2,
     "max_articles_per_request": 1,
     "feed_page_size": 100,
@@ -44,3 +46,4 @@
     "tools": ["search_articles", "get_article"]
   }
 }
+

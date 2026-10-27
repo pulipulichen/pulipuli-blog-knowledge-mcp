@@ -6,11 +6,11 @@ This deployment indexes only Pulipuli Blog. The source adapter remains reusable,
 
 ## Architecture and Data Flow
 
-1. GitHub Actions invokes a Worker ingestion endpoint protected by a Bearer Token every two days.
-2. The Worker reads Blogger's summary JSON feed, follows `rel=next` and `start-index` pagination, and stores the backfill cursor in D1. Configured Blogger Atom URLs and existing cursors are adapted without resetting the offset; generic Atom and RSS feeds remain supported.
-3. The Worker checks `robots.txt` before fetching actual article pages and extracting their body text. RSS excerpts are not treated as full text.
-4. Using the canonical URL as the unique key, the Worker upserts each article's title, URL, dates, tags, full text, and content hash into D1.
-5. When an article changes, it is chunked again. Cloudflare Workers AI `@cf/baai/bge-m3` generates multilingual embeddings, which are stored in Qdrant Cloud. The Qdrant collection is created on the first write using the actual vector size.
+1. GitHub Actions runs `npm run ingest` on its hosted Node.js runner every two days. No user computer or self-hosted server is needed.
+2. The runner reads Blogger's summary JSON feed, follows `rel=next` and `start-index` pagination, and stores the backfill cursor in D1 through its REST API. Configured Blogger Atom URLs and existing cursors are adapted without resetting the offset; generic Atom and RSS feeds remain supported.
+3. The runner checks `robots.txt` before fetching actual article pages and extracting their body text with Cheerio. RSS excerpts are not treated as full text.
+4. Using the canonical URL as the unique key, the runner upserts each article's title, URL, dates, tags, full text, and content hash into D1. The same ingestion engine and lease/checkpoint SQL are shared with the Worker.
+5. When an article changes, the runner splits it into chunks and calls the authenticated Worker embedding proxy once per chunk. Workers AI `@cf/baai/bge-m3` generates each vector; the runner writes vectors to Qdrant Cloud. Large HTML parsing, vector JSON serialization, and full-article chunking no longer consume one Worker's CPU allowance. The Qdrant collection is created on the first write using the actual vector size.
 6. The public search endpoint retrieves candidates through D1 substring matching and Qdrant semantic search. Hybrid mode combines rankings with Reciprocal Rank Fusion (RRF).
 7. `/mcp` exposes the read-only `search_articles` and `get_article` tools over Streamable HTTP.
 
@@ -31,6 +31,9 @@ Migrations are stored in `migrations/`. Article IDs are derived from canonical U
 - `GET /api/articles/:id`
 - `GET /health`
 - `POST /internal/ingest` (Bearer Token; supports `{"reset": true}` to restart the historical backfill)
+- `GET /internal/ingest/status` (Bearer Token; last reported article and lease expiry)
+- `GET /internal/ingest/embedding` (Bearer Token; model check)
+- `POST /internal/ingest/embedding` (Bearer Token; one `text` string, at most 3,000 Unicode characters and a 16 KiB JSON body)
 - `/mcp` (Streamable HTTP; read-only tools)
 
 Search results include article ID, title, URL, date, tags, excerpt, and score. Only `get_article` and the article API return full text. Public endpoints limit input length, result counts, and request rates per Worker isolate. For production deployments with high traffic, configure WAF Rate Limiting in your Cloudflare zone as well.
@@ -45,16 +48,16 @@ Search results include article ID, title, URL, date, tags, excerpt, and score. O
 ## Scheduling and Retries
 
 - The GitHub Actions workflow is scheduled daily and uses UTC day-number parity to gate execution to every other day. Manual runs can synchronize or reset the backfill at any time.
-- Each Worker request processes at most 10 articles with no more than 2 concurrent fetches. The workflow repeatedly invokes the Worker until that synchronization run completes.
+- Each runner batch processes one article by default, including due retries. It reads the same public settings from `wrangler.example.toml` as deployment, and resumes until completion or a clean time/batch limit pause.
 - The cursor advances only after article-body extraction, vector upsert, and D1 upsert succeed. Per-article failures are recorded for delayed retries.
 - Upstream HTTP 408, 425, 429, and 5xx responses, as well as network failures, are retried with exponential backoff, respecting `Retry-After`.
-- `/internal/ingest` uses a 120-second D1 lease with a 30-second renewal heartbeat to prevent overlapping batches. Ownership is checked before committing articles and checkpoints; cleanup is conditional on the lease token. Upserts use canonical URLs and stable IDs for idempotency.
+- Both runner and direct ingestion use a 120-second D1 lease with a 30-second renewal heartbeat to prevent overlapping batches. Ownership is checked before committing articles and checkpoints; cleanup is conditional on the lease token. Upserts use canonical URLs and stable IDs for idempotency. D1 REST batches preserve the existing transaction boundaries. Ambiguous write failures are not blindly replayed by the REST adapter.
 
 ## Security and Quotas
 
 - Never commit Worker Secrets, Qdrant API keys, or ingestion tokens to Git.
-- Search, MCP, and article-read operations are read-only. Writes are available only through the authenticated ingestion endpoint.
-- Qdrant credentials are used only in the server-side Worker environment.
+- Search, MCP, and article-read operations are read-only. Ingestion writes use the authenticated D1/Qdrant APIs from the Actions runner, or the legacy protected ingestion endpoint.
+- Qdrant credentials are used only in the server-side Worker and trusted production Actions environment. Existing deployment secrets are reused; no extra Workers AI REST token is required.
 - Free-tier quotas can change, and there is no guarantee that historical backfills will always remain free. Check current Workers, Workers AI, D1, Qdrant, and GitHub Actions limits before deployment.
 
 ## Implementation Limitations
@@ -62,3 +65,4 @@ Search results include article ID, title, URL, date, tags, excerpt, and score. O
 - Initial backfilling depends on Blogger feed pagination. A sitemap or archive adapter may be needed if the source later removes historical feed pages.
 - Body extraction currently prioritizes standard HTML `article` and `main` elements, Blogger `.post-body`, and `.entry-content` selectors. Unusual templates may need additional rules.
 - D1 keyword search currently scans article text, which is suitable for validating a personal-blog-sized dataset. Consider FTS5 or an external full-text search engine as volume increases.
+

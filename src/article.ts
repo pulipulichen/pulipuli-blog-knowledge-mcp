@@ -133,7 +133,12 @@ async function extractReadableText(html: string): Promise<string> {
   return best;
 }
 
-export async function fetchArticleText(urlValue: string, entry: FeedEntry, env: Env): Promise<string> {
+export async function fetchArticleText(
+  urlValue: string,
+  entry: FeedEntry,
+  env: Env,
+  extractText: (html: string) => string | Promise<string> = extractReadableText,
+): Promise<string> {
   const config = getConfig(env);
   const url = new URL(urlValue);
   const blogOrigin = new URL(config.blogBaseUrl).origin;
@@ -158,9 +163,10 @@ export async function fetchArticleText(urlValue: string, entry: FeedEntry, env: 
     throw new Error("Article URL did not return HTML");
   }
 
-  const best = await extractReadableText(html);
+  const best = await extractText(html);
   if (best.length < 80) {
     throw new Error(`Could not extract readable article text: ${entry.title.slice(0, 100)}`);
   }
   return best.slice(0, config.maxFullTextChars);
 }
+
